@@ -114,6 +114,12 @@ def start_call(
     msg["call_id"] = call_id
     push_new_message(thread_id, msg)
 
+    # Tell other participants a call is live so their UI offers a "Join" button.
+    try:
+        broadcast_call_signal(thread_id, actor_user_id, kind="call_started", call_id=call_id)
+    except Exception:
+        pass
+
     return {
         "call_id": call_id,
         "thread_id": thread_id,
@@ -121,6 +127,26 @@ def start_call(
         "status": "active",
         "message": msg,
     }
+
+
+def get_active_call(thread_id: str, actor_user_id: str) -> dict:
+    """Return the thread's currently-active in-house call, if any, so a late or
+    reloaded participant can discover and join it."""
+    _require_participant(thread_id, actor_user_id)
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT call_id, started_by, started_at FROM chat_call_session "
+                "WHERE thread_id=%s AND status='active' ORDER BY started_at DESC LIMIT 1",
+                (thread_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"call_id": None}
+    return {"call_id": row["call_id"], "started_by": row.get("started_by")}
 
 
 # ── Live transcript: per-participant mic chunks → Whisper → append-only ───────
@@ -222,6 +248,9 @@ def transcribe_chunk(
         from websockets_custom.ws_instance import ws_service
         from assessment_chat.translation import translate_message, normalize_lang
         recips = [p for p in list_participants(thread_id) if p.get("user_id")]
+        sender_email = next(
+            (p.get("email") for p in recips if p.get("user_id") == actor_user_id), None
+        )
 
         async def _run_emit():
             for p in recips:
@@ -234,7 +263,8 @@ def transcribe_chunk(
                     shown, ai = text, False
                 extra = {
                     "thread_id": thread_id, "call_id": call_id, "segment_id": segment_id,
-                    "sender_user_id": actor_user_id, "text": shown, "original_text": text,
+                    "sender_user_id": actor_user_id, "sender_email": sender_email,
+                    "text": shown, "original_text": text,
                     "lang": tgt, "ai_translated": ai, "client_ts": int(client_ts or 0),
                     "event": "transcript",
                 }

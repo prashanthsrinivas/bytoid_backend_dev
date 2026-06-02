@@ -389,6 +389,24 @@ def call_end():
     return jsonify(result), 200
 
 
+@assessment_chat_bp.route("/call/active", methods=["GET"])
+def call_active():
+    """Return the thread's currently-active call so a late/reloaded participant
+    can join it. Query: user_id, thread_id."""
+    user_id = _caller()
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    thread_id = request.args.get("thread_id")
+    if not thread_id:
+        return jsonify({"error": "thread_id is required"}), 400
+    try:
+        from assessment_chat.audio import get_active_call
+        result = get_active_call(thread_id, user_id)
+    except Exception as exc:
+        return _err(exc)
+    return jsonify(result), 200
+
+
 @assessment_chat_bp.route("/call/transcribe-chunk", methods=["POST"])
 def call_transcribe_chunk():
     """Transcribe one live mic chunk and broadcast it to the thread.
