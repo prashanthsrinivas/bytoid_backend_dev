@@ -87,38 +87,10 @@ def start_call(
     participants, and emailed to bridged participants.
     """
     _require_participant(thread_id, actor_user_id)
-    thread = get_thread(thread_id)
-    owner_id = thread.get("created_by")
 
-    attendees = [
-        p["email"] for p in list_participants(thread_id)
-        if p.get("email")
-    ]
-    start = datetime.now(timezone.utc)
-    end = start + timedelta(minutes=max(int(duration_minutes or DEFAULT_CALL_MINUTES), 1))
-    summary = title or f"Assessment call — {thread.get('doc_type') or 'review'} {thread.get('doc_id') or ''}".strip()
-
-    try:
-        from services.meet_service import GoogleMeetService
-        meet = GoogleMeetService(userid=owner_id)
-        result = meet.createbasemeet(
-            summary=summary,
-            start_time=start.isoformat(),
-            end_time=end.isoformat(),
-            attendees=attendees,
-            description="Audio call started from the Bytoid assessment conversation.",
-            timezone="UTC",
-        )
-    except Exception as exc:
-        logger.error("start_call: Meet creation failed: %s", exc)
-        raise ChatError("could not create the audio call (Meet)") from exc
-
-    if not isinstance(result, dict) or not result.get("success"):
-        raise ChatError(f"Meet creation failed: {(result or {}).get('error', 'unknown error')}")
-
-    join_url = result.get("meet_link")
-    event_id = result.get("event_id")
-
+    # In-house audio call: no external provider / join link. Participants connect
+    # peer-to-peer (WebRTC) with signaling relayed over the websocket; the live
+    # transcript is built from per-participant mic chunks (see transcribe_chunk).
     call_id = str(uuid.uuid4())
     conn = connect_to_rds()
     try:
@@ -126,35 +98,188 @@ def start_call(
             cur.execute(
                 """INSERT INTO chat_call_session
                    (call_id, thread_id, started_by, provider, join_url, event_id, status)
-                   VALUES (%s,%s,%s,'google_meet',%s,%s,'active')""",
-                (call_id, thread_id, actor_user_id, join_url, event_id),
+                   VALUES (%s,%s,%s,'inhouse',NULL,NULL,'active')""",
+                (call_id, thread_id, actor_user_id),
             )
         conn.commit()
     finally:
         conn.close()
 
-    # Announce in the conversation (visible to everyone so they can join).
+    # Announce in the conversation so other participants can join in-app.
     msg = post_message(
         thread_id, actor_user_id,
-        f"📞 Audio call started. Join: {join_url}",
+        "📞 Audio call started in the conversation.",
         lang="en", visibility="all", source="system",
     )
     msg["call_id"] = call_id
     push_new_message(thread_id, msg)
-    try:
-        from assessment_chat.email_bridge import deliver_for_thread
-        deliver_for_thread(thread_id, msg, actor_user_id)
-    except Exception:
-        logger.debug("call-start email announce skipped", exc_info=False)
 
     return {
         "call_id": call_id,
         "thread_id": thread_id,
-        "join_url": join_url,
-        "event_id": event_id,
+        "provider": "inhouse",
         "status": "active",
         "message": msg,
     }
+
+
+# ── Live transcript: per-participant mic chunks → Whisper → append-only ───────
+
+
+def broadcast_call_signal(
+    thread_id: str,
+    from_user: str,
+    *,
+    kind: str,
+    data: dict | None = None,
+    to_user: str | None = None,
+    call_id: str | None = None,
+) -> None:
+    """Relay a call control/signaling event over the websocket.
+
+    ``to_user`` set → targeted (WebRTC offer/answer/ice). Otherwise broadcast to
+    every other active participant of the thread (presence: join/leave). Pure
+    fan-out; never raises.
+    """
+    try:
+        from websockets_custom.ws_instance import ws_service
+    except Exception:
+        return
+
+    extra = {
+        "thread_id": thread_id,
+        "call_id": call_id,
+        "from_user": from_user,
+        "kind": kind,
+        "data": data or {},
+        "event": kind,
+    }
+
+    if to_user:
+        targets = [to_user]
+    else:
+        try:
+            targets = [
+                p["user_id"] for p in list_participants(thread_id)
+                if p.get("user_id") and p.get("user_id") != from_user
+            ]
+        except Exception:
+            return
+
+    async def _run_emit():
+        for uid in targets:
+            try:
+                await ws_service.emit(
+                    user_id=uid, message="", scope="user",
+                    msg_type="call_signal", feature="call_signal", extra=extra,
+                )
+            except Exception:
+                pass
+
+    _run(_run_emit())
+
+
+def transcribe_chunk(
+    call_id: str,
+    actor_user_id: str,
+    audio_path: str,
+    *,
+    lang: str | None = None,
+    client_ts: int = 0,
+) -> dict:
+    """Transcribe one mic chunk (Whisper), store it as a transcript segment, and
+    broadcast it live to the thread. Append-only: never mutates a shared blob, so
+    concurrent chunks from multiple speakers can't race or scramble ordering."""
+    call = _get_call(call_id)
+    thread_id = call["thread_id"]
+    _require_participant(thread_id, actor_user_id)
+
+    from agent_route.s_t_s import Speech2TextService
+    stt = Speech2TextService(actor_user_id)
+    text = (_run(stt.transcribe_audio(audio_path)) or "").strip()
+    if not text:
+        return {"call_id": call_id, "text": ""}
+
+    segment_id = str(uuid.uuid4())
+    src_lang = (lang or "en").split("-")[0].lower()
+    conn = connect_to_rds()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO chat_call_segment
+                   (segment_id, call_id, sender_user_id, lang, text, client_ts)
+                   VALUES (%s,%s,%s,%s,%s,%s)""",
+                (segment_id, call_id, actor_user_id, src_lang, text, int(client_ts or 0)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Live fan-out — translate each segment into EACH viewer's reading language so
+    # the transcript shows in their language (en/fr/es/ja/zh). Cached per
+    # (segment_id, lang) so re-emits/re-reads are cheap.
+    try:
+        from websockets_custom.ws_instance import ws_service
+        from assessment_chat.translation import translate_message, normalize_lang
+        recips = [p for p in list_participants(thread_id) if p.get("user_id")]
+
+        async def _run_emit():
+            for p in recips:
+                uid = p["user_id"]
+                tgt = normalize_lang(p.get("preferred_lang") or "en")
+                try:
+                    tr = translate_message(segment_id, text, src_lang, tgt, actor_user_id)
+                    shown, ai = tr["text"], tr["ai_translated"]
+                except Exception:
+                    shown, ai = text, False
+                extra = {
+                    "thread_id": thread_id, "call_id": call_id, "segment_id": segment_id,
+                    "sender_user_id": actor_user_id, "text": shown, "original_text": text,
+                    "lang": tgt, "ai_translated": ai, "client_ts": int(client_ts or 0),
+                    "event": "transcript",
+                }
+                try:
+                    await ws_service.emit(
+                        user_id=uid, message=shown, scope="user",
+                        msg_type="call_transcript", feature="call_transcript", extra=extra,
+                    )
+                except Exception:
+                    pass
+
+        _run(_run_emit())
+    except Exception:
+        logger.debug("call transcript broadcast skipped", exc_info=False)
+
+    return {"call_id": call_id, "segment_id": segment_id, "text": text, "lang": src_lang}
+
+
+def _assemble_segments(call_id: str) -> str:
+    """Build the full transcript from append-only segments, ORDER BY client_ts so
+    out-of-order / concurrent arrivals never scramble the sentences."""
+    conn = connect_to_rds()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT sender_user_id, text FROM chat_call_segment "
+                "WHERE call_id=%s ORDER BY client_ts, created_at",
+                (call_id,),
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return ""
+    emails = {}
+    try:
+        from assessment_chat.service import _emails_for
+        emails = _emails_for({r.get("sender_user_id") for r in rows})
+    except Exception:
+        pass
+    lines = []
+    for r in rows:
+        who = emails.get(r.get("sender_user_id")) or r.get("sender_user_id") or "Participant"
+        lines.append(f"{who}: {r['text']}")
+    return "\n".join(lines)[:_MAX_TRANSCRIPT_CHARS]
 
 
 # ── End a call: transcribe + summarize ───────────────────────────────────────
@@ -235,9 +360,15 @@ def end_call(
     call = _get_call(call_id)
     _require_participant(call["thread_id"], actor_user_id)
 
-    text, recording_ref = _resolve_transcript(
-        actor_user_id, transcript=transcript, audio_path=audio_path, audio_s3_key=audio_s3_key,
-    )
+    # Default path for in-house calls: assemble the live transcript from the
+    # append-only segments (ordered). An explicitly-supplied transcript/recording
+    # still wins (back-compat / external recordings).
+    if not (transcript and transcript.strip()) and not audio_path and not audio_s3_key:
+        text, recording_ref = _assemble_segments(call_id), None
+    else:
+        text, recording_ref = _resolve_transcript(
+            actor_user_id, transcript=transcript, audio_path=audio_path, audio_s3_key=audio_s3_key,
+        )
     summary = _summarize_transcript(actor_user_id, text) if text else ""
 
     conn = connect_to_rds()
@@ -251,6 +382,12 @@ def end_call(
         conn.commit()
     finally:
         conn.close()
+
+    # Tell peers the call is over so they tear down their connections.
+    try:
+        broadcast_call_signal(call["thread_id"], actor_user_id, kind="call_ended", call_id=call_id)
+    except Exception:
+        pass
 
     return {
         "call_id": call_id,

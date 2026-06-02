@@ -373,7 +373,79 @@ def call_end():
         )
     except Exception as exc:
         return _err(exc)
+
+    # Auto-file the Minutes of Meeting into notes (best-effort). Requires an
+    # internal-side actor; if the ender is assessee-side this no-ops and the UI
+    # still shows the MoM for an internal user to file manually.
+    result["notes_filed"] = False
+    try:
+        if (result.get("summary") or "").strip():
+            from assessment_chat.audio import summary_to_notes
+            filed = summary_to_notes(call_id, user_id, target="both")
+            result["notes_filed"] = True
+            result["notes_message"] = filed.get("message")
+    except Exception as exc:
+        logger.debug("auto-file MoM skipped: %s", exc)
     return jsonify(result), 200
+
+
+@assessment_chat_bp.route("/call/transcribe-chunk", methods=["POST"])
+def call_transcribe_chunk():
+    """Transcribe one live mic chunk and broadcast it to the thread.
+
+    multipart/form-data: {user_id, call_id, lang?, client_ts?, audio}
+    """
+    raw_uid = request.form.get("user_id")
+    user_id = parse_composite_user_id(raw_uid)[1] if raw_uid else None
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    call_id = request.form.get("call_id")
+    audio = request.files.get("audio")
+    if not call_id or audio is None:
+        return jsonify({"error": "call_id and audio are required"}), 400
+
+    import os
+    import tempfile
+
+    suffix = os.path.splitext(audio.filename or "")[1] or ".webm"
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            audio.save(tmp.name)
+            tmp_path = tmp.name
+        from assessment_chat.audio import transcribe_chunk
+        result = transcribe_chunk(
+            call_id, user_id, tmp_path,
+            lang=request.form.get("lang"),
+            client_ts=int(request.form.get("client_ts") or 0),
+        )
+    except Exception as exc:
+        return _err(exc)
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+    return jsonify(result), 200
+
+
+@assessment_chat_bp.route("/call/ice", methods=["GET"])
+def call_ice():
+    """ICE servers for the in-house WebRTC call. STUN is always returned; TURN is
+    included when configured (required for reliable cross-network connectivity)."""
+    import os
+
+    ice = [{"urls": os.getenv("STUN_URL", "stun:stun.l.google.com:19302")}]
+    turn_url = os.getenv("TURN_URL")
+    if turn_url:
+        server = {"urls": turn_url}
+        if os.getenv("TURN_USERNAME"):
+            server["username"] = os.getenv("TURN_USERNAME")
+        if os.getenv("TURN_CREDENTIAL"):
+            server["credential"] = os.getenv("TURN_CREDENTIAL")
+        ice.append(server)
+    return jsonify({"ice_servers": ice}), 200
 
 
 @assessment_chat_bp.route("/call/summary-to-notes", methods=["POST"])
