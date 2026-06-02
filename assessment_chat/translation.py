@@ -92,6 +92,12 @@ def _translate_text(text: str, source_lang: str, target_lang: str, user_id: str)
         f"Message:\n{text}"
     )
 
+    # get_fireworks_response2 calls credits.has_ai_credits(); it needs a REAL
+    # Credits instance. Passing None raised AttributeError → the call failed and
+    # every message silently fell back to its untranslated original (the reason
+    # picking a language did nothing). Mirror policy_hub, which uses Credits().
+    from credits_route.route import Credits
+
     loop = asyncio.new_event_loop()
     try:
         raw = loop.run_until_complete(
@@ -99,7 +105,7 @@ def _translate_text(text: str, source_lang: str, target_lang: str, user_id: str)
                 user_id=user_id,
                 user_message=prompt,
                 role="user",
-                credits=None,
+                credits=Credits(),
                 temp=0.1,
             )
         )

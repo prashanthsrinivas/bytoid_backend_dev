@@ -99,6 +99,36 @@ app.secret_key = os.getenv("SECRETKEY")
 # app.config.update(SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=False)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
+
+class BearerSessionMiddleware:
+    """Let cross-site clients authenticate with the signed session via header.
+
+    Safari (ITP) won't send our third-party session cookie, so clients send the
+    same signed value as `Authorization: Bearer <token>` instead. Here we copy it
+    into the request's Cookie before Flask opens the session — so all existing
+    cookie/session code works unchanged. A real session cookie (same-origin /
+    non-Safari) always wins; we only fill in when it's absent.
+    """
+
+    def __init__(self, wsgi_app, cookie_name: str):
+        self.wsgi_app = wsgi_app
+        self.cookie_name = cookie_name
+
+    def __call__(self, environ, start_response):
+        auth = environ.get("HTTP_AUTHORIZATION", "")
+        if auth[:7].lower() == "bearer ":
+            token = auth[7:].strip()
+            existing = environ.get("HTTP_COOKIE", "")
+            if token and f"{self.cookie_name}=" not in existing:
+                piece = f"{self.cookie_name}={token}"
+                environ["HTTP_COOKIE"] = f"{existing}; {piece}" if existing else piece
+        return self.wsgi_app(environ, start_response)
+
+
+app.wsgi_app = BearerSessionMiddleware(
+    app.wsgi_app, app.config.get("SESSION_COOKIE_NAME", "session")
+)
+
 app.config.update(SESSION_COOKIE_SAMESITE="None", SESSION_COOKIE_SECURE=True)
 
 # Cross-site cookie reliability (esp. Safari ITP): the session cookie is only
@@ -162,6 +192,27 @@ def cors_after_request(response):
             "Content-Type, Authorization, X-Requested-With"
         )
         response.headers["Access-Control-Max-Age"] = "3600"
+
+        # Hand the signed session back as a bearer token so cross-site clients
+        # (Safari ITP drops the third-party session cookie) can re-send it as
+        # `Authorization: Bearer <token>`. Refreshed on every authenticated
+        # response so it stays current as the session changes (workspace switch,
+        # 2FA clear, etc.). Must be exposed for JS to read it cross-origin.
+        try:
+            if session.get("user_id"):
+                from utils.session_token import current_session_token
+
+                token = current_session_token()
+                if token:
+                    response.headers["X-Session-Token"] = token
+                    expose = response.headers.get("Access-Control-Expose-Headers")
+                    response.headers["Access-Control-Expose-Headers"] = (
+                        f"{expose}, X-Session-Token"
+                        if expose and "X-Session-Token" not in expose
+                        else (expose or "X-Session-Token")
+                    )
+        except Exception:
+            pass
 
     return response
 

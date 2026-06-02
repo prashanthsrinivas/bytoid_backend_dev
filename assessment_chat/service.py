@@ -368,6 +368,17 @@ def get_or_create_thread(
             wf = None
 
     org_id = (wf or {}).get("org_id") or get_user_org_id(user_id)
+
+    # Shared/global anchors (e.g. context_type="global", context_id="workspace")
+    # are the SAME string for every tenant, but chat_thread has a GLOBAL unique
+    # key on (context_type, context_id). Without namespacing, the first org to
+    # open the workspace conversation would own the only row and every other
+    # org's create would collide — or worse, share one cross-tenant thread.
+    # Namespace these anchors by org so each tenant gets its own unique row.
+    # Workflow/doc contexts already carry globally-unique ids and are untouched.
+    if context_type in ("global",) and org_id and not context_id.endswith(f":{org_id}"):
+        context_id = f"{context_id}:{org_id}"
+
     org_users = list_org_users(user_id)
     workflow_party_ids = {wf.get(col) for col, _ in _WORKFLOW_ROLE_COLS if wf and wf.get(col)}
     caller_is_member = user_id in org_users or user_id in workflow_party_ids
