@@ -2552,6 +2552,91 @@ def list_policies():
 # ── 3. UPDATE ─────────────────────────────────────────────────────────────────
 
 
+def _metadata_table_html(metadata: dict, doc_type: str) -> str:
+    """Render the document-header metadata table from structured metadata.
+
+    Uses the same row labels ``_extract_metadata_from_table`` understands so the
+    table round-trips back to the same metadata on the next parse.
+    """
+    from policy_hub.structured import _esc
+
+    name_label = {
+        "policy": "Policy Name",
+        "procedure": "Procedure Name",
+        "standard": "Standard Name",
+    }.get(doc_type, "Policy Name")
+
+    ordered = [
+        (name_label, metadata.get("title")),
+        ("Document ID", metadata.get("document_id")),
+        ("Version", metadata.get("version")),
+        ("Effective Date", metadata.get("effective_date")),
+        ("Classification", metadata.get("classification")),
+    ]
+    rows = "".join(
+        f"<tr><td>{_esc(str(label))}</td><td>{_esc(str(value))}</td></tr>"
+        for label, value in ordered
+        if value
+    )
+    return f"<table>{rows}</table>"
+
+
+def _section_inner_html(body_html: str) -> str:
+    """Return a section's inner HTML, tolerating either the stored inner-only
+    form or a full ``<div data-section-id><h2>…</h2>…</div>`` wrapper."""
+    if not body_html:
+        return ""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(body_html, "lxml")
+    wrapper = soup.find(attrs={"data-section-id": True})
+    scope = wrapper if wrapper is not None else (soup.body or soup)
+    parts = [
+        str(child)
+        for child in scope.children
+        if getattr(child, "name", None) != "h2"
+    ]
+    return "".join(parts).strip()
+
+
+def _render_content_from_sections(sections: list, metadata: dict, doc_type: str) -> str:
+    """Rebuild the canonical document HTML from structured sections.
+
+    Unlike ``render_document_html`` (template-driven — it always emits every
+    template section), this renders exactly the sections provided, so a section
+    the user deleted on the client is removed from the content too.
+    """
+    from policy_hub.structured import _esc
+
+    parts = ['<div class="policy-document">']
+    for sec in sections or []:
+        sid = sec.get("id", "")
+        title = sec.get("title", "")
+        kind = sec.get("kind", "text")
+        parts.append(f'<div data-section-id="{_esc(str(sid))}">')
+        parts.append(f"<h2>{_esc(str(title))}</h2>")
+
+        if kind in ("statements", "steps"):
+            stmts = sorted(sec.get("statements") or [], key=lambda s: s.get("seq", 0))
+            list_tag = "ol" if kind == "steps" else "ul"
+            parts.append(f"<{list_tag}>")
+            for s in stmts:
+                parts.append(
+                    f'<li data-statement-id="{_esc(str(s.get("id", "")))}">'
+                    f'{_esc(str(s.get("text", "")))}</li>'
+                )
+            parts.append(f"</{list_tag}>")
+        elif kind == "header_table":
+            parts.append(_metadata_table_html(metadata, doc_type))
+        else:  # text, history and any other free-HTML section
+            inner = _section_inner_html(sec.get("body_html", ""))
+            parts.append(inner or "<p></p>")
+
+        parts.append("</div>")
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
 @policy_hub_bp.route("/update", methods=["POST"])
 @permission_required_body("policyhub.edit")
 def update_policy():
@@ -2590,6 +2675,33 @@ def update_policy():
         content_updated = True
     if "frameworks" in body:
         existing["frameworks"] = body["frameworks"]
+
+    # Structured edits from the document view: the client sends the full
+    # ``sections`` array (and ``metadata``) it is displaying — including manual
+    # body edits, metadata edits and section deletions. Persist them and rebuild
+    # the canonical ``content`` HTML so content-based consumers (download,
+    # publish, history, AI whole-doc edits) stay consistent. A template-driven
+    # render would resurrect deleted sections, so we render only what was sent.
+    structured_updated = False
+    if v2 and isinstance(body.get("metadata"), dict):
+        existing["metadata"] = {**(existing.get("metadata") or {}), **body["metadata"]}
+        structured_updated = True
+    if v2 and isinstance(body.get("sections"), list):
+        existing["sections"] = body["sections"]
+        structured_updated = True
+    if v2 and structured_updated and not content_updated:
+        try:
+            existing["content"] = _render_content_from_sections(
+                existing.get("sections", []),
+                existing.get("metadata") or {},
+                existing.get("type", "policy"),
+            )
+        except Exception as exc:
+            logger.error(
+                "update_policy: failed to rebuild content from sections for %s: %s",
+                policy_id, exc,
+            )
+
     existing["updated_at"] = datetime.now(timezone.utc).isoformat()
     existing["etag"] = str(uuid.uuid4())
 
