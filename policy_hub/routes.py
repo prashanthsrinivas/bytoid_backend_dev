@@ -2682,14 +2682,18 @@ def update_policy():
     # the canonical ``content`` HTML so content-based consumers (download,
     # publish, history, AI whole-doc edits) stay consistent. A template-driven
     # render would resurrect deleted sections, so we render only what was sent.
+    # NOTE: intentionally NOT gated on the v2 org feature flag. Only the V2
+    # structured editor sends a ``sections`` array, and a doc that has one IS a
+    # V2 doc — legacy/other callers never send it. Gating on policy_hub_v2_enabled
+    # (which keys off org_id) made this a silent no-op for orgs without the flag.
     structured_updated = False
-    if v2 and isinstance(body.get("metadata"), dict):
+    if isinstance(body.get("metadata"), dict):
         existing["metadata"] = {**(existing.get("metadata") or {}), **body["metadata"]}
         structured_updated = True
-    if v2 and isinstance(body.get("sections"), list):
+    if isinstance(body.get("sections"), list):
         existing["sections"] = body["sections"]
         structured_updated = True
-    if v2 and structured_updated and not content_updated:
+    if structured_updated and not content_updated:
         try:
             existing["content"] = _render_content_from_sections(
                 existing.get("sections", []),
@@ -2701,6 +2705,10 @@ def update_policy():
                 "update_policy: failed to rebuild content from sections for %s: %s",
                 policy_id, exc,
             )
+        logger.info(
+            "update_policy: applied structured edit for %s (sections=%d)",
+            policy_id, len(existing.get("sections", []) or []),
+        )
 
     existing["updated_at"] = datetime.now(timezone.utc).isoformat()
     existing["etag"] = str(uuid.uuid4())
