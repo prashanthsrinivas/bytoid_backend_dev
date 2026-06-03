@@ -4260,6 +4260,41 @@ def _make_policy_col_id(schema_cols: list) -> str:
     return f"pol_{n}"
 
 
+def _statements_from_yaml_sections(pol_data: dict) -> list:
+    """Build a matcher-ready statement list from a policy YAML's sections.
+
+    Fallback for when LanceDB has no indexed statements for the policy (e.g. the
+    policy was authored but its statements were never synced to LanceDB). This
+    is tolerant of key-name drift across policy schema versions:
+
+    - id   may be ``id`` or ``statement_id``
+    - text may be ``text``, ``content``, ``statement`` or ``body``
+
+    Entries with no resolvable text are skipped rather than raising, so a single
+    malformed statement — or a key the schema no longer uses — can't crash the
+    whole mapping job and silently produce zero matches (the previous behaviour,
+    which read ``s["id"]``/``s["text"]`` directly).
+    """
+    statements: list = []
+    seq = 0
+    for sec in pol_data.get("sections") or []:
+        section_default = sec.get("section_id") or sec.get("id") or ""
+        for s in sec.get("statements") or []:
+            if not isinstance(s, dict):
+                continue
+            text = s.get("text") or s.get("content") or s.get("statement") or s.get("body")
+            if not text or not str(text).strip():
+                continue
+            statements.append({
+                "statement_id": s.get("statement_id") or s.get("id") or str(uuid.uuid4()),
+                "text": str(text).strip(),
+                "section_id": s.get("section_id") or section_default,
+                "seq": s.get("seq", seq),
+            })
+            seq += 1
+    return statements
+
+
 def _load_tracker(user_id: str, tracker_id: str):
     """Load tracker meta + data; returns (tracker_meta, tracker_data) or raises."""
     config_path, config_data = check_config_exist(user_id)
@@ -4324,12 +4359,7 @@ async def _add_policy_worker_impl(data: dict, job_id: str = None) -> dict:
     statements = await fetch_policy_statements(policy_id, version=policy_version)
     stmt_source = "lancedb"
     if not statements:
-        raw_sections = pol_data.get("sections", [])
-        statements = [
-            {"statement_id": s["id"], "text": s["text"], "section_id": s.get("section_id", ""), "seq": s.get("seq", i)}
-            for sec in raw_sections
-            for i, s in enumerate(sec.get("statements", []))
-        ]
+        statements = _statements_from_yaml_sections(pol_data)
         stmt_source = "yaml_fallback"
 
     logger.info(
@@ -4779,12 +4809,7 @@ async def _update_policy_worker_impl(data: dict, job_id: str = None) -> dict:
     statements = await fetch_policy_statements(policy_id, version=policy_version)
     stmt_source = "lancedb"
     if not statements:
-        raw_sections = pol_data.get("sections", [])
-        statements = [
-            {"statement_id": s["id"], "text": s["text"], "section_id": s.get("section_id", ""), "seq": s.get("seq", i)}
-            for sec in raw_sections
-            for i, s in enumerate(sec.get("statements", []))
-        ]
+        statements = _statements_from_yaml_sections(pol_data)
         stmt_source = "yaml_fallback"
 
     logger.info(
