@@ -3959,7 +3959,13 @@ class WorkflowRunnerV2:
                         "reason": "Artifact type not allowed by runbook configuration.",
                     }
                 else:
-                    discarded_evidence[artifact] = data
+                    # Every artifact must be admissible or inadmissible — there is
+                    # no "discarded" middle ground. Types the runbook doesn't call
+                    # for are inadmissible rather than silently dropped.
+                    inadmissible_evidence[artifact] = {
+                        **data,
+                        "reason": "Artifact type not required by runbook configuration.",
+                    }
             else:
                 # No runbook config → everything found is admissible
                 admissible_evidence[artifact] = data
@@ -4237,26 +4243,64 @@ class WorkflowRunnerV2:
         current_urls.extend(cf_urls)
         self.workflow_json["evidences_ques"] = current_urls
 
+        admissible_overview = [
+            {
+                "artifact": k,
+                "files": list(v["files"]),
+                "summary": v["snippets"][0] if v["snippets"] else "",
+            }
+            for k, v in admissible_evidence.items()
+        ]
+        inadmissible_overview = [
+            {
+                "artifact": k,
+                "files": list(v["files"]),
+                "summary": v.get("reason", ""),
+            }
+            for k, v in inadmissible_evidence.items()
+        ]
+
+        # Every uploaded file must be classified as admissible or inadmissible.
+        # Any file whose content matched no known evidence type was never added
+        # to evidence_map, so it would otherwise disappear from the overview —
+        # record those files as inadmissible instead of dropping them.
+        classified_file_urls = set()
+        for v in admissible_evidence.values():
+            classified_file_urls.update(v.get("files", set()) or [])
+        for v in inadmissible_evidence.values():
+            classified_file_urls.update(v.get("files", set()) or [])
+
+        uploaded_files = []  # (cf_url, display_name)
+        for f in extracted_files:
+            key = f.get("s3_key", "")
+            url = attach_CLDFRNT_url(key) if key else f.get("filename", "")
+            if url:
+                name = f.get("filename") or (key.rsplit("/", 1)[-1] if key else url)
+                uploaded_files.append((url, name))
+        for key in inp_link_keys:
+            if key:
+                uploaded_files.append(
+                    (attach_CLDFRNT_url(key), key.rsplit("/", 1)[-1])
+                )
+
+        seen_unclassified = set()
+        for url, name in uploaded_files:
+            if url in classified_file_urls or url in seen_unclassified:
+                continue
+            seen_unclassified.add(url)
+            inadmissible_overview.append(
+                {
+                    "artifact": name,
+                    "files": [url],
+                    "summary": "No recognized evidence type was found in this document.",
+                }
+            )
+
         self.workflow_json["evidence_overview"] = {
-            "admissible": [
-                {
-                    "artifact": k,
-                    "files": list(v["files"]),
-                    "summary": v["snippets"][0] if v["snippets"] else "",
-                }
-                for k, v in admissible_evidence.items()
-            ],
-            "inadmissible": [
-                {
-                    "artifact": k,
-                    "files": list(v["files"]),
-                    "summary": v.get("reason", ""),
-                }
-                for k, v in inadmissible_evidence.items()
-            ],
-            "discarded": [
-                {"artifact": k, "files": []} for k, v in discarded_evidence.items()
-            ],
+            "admissible": admissible_overview,
+            "inadmissible": inadmissible_overview,
+            # Classification is strictly binary; nothing is discarded.
+            "discarded": [],
         }
         self.saveworkflowtos3()
 
