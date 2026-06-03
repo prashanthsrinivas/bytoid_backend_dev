@@ -368,7 +368,12 @@ def _summarize_transcript(user_id: str, transcript: str) -> str:
         "Use only what the transcript states; do not invent details.\n\n"
         f"Transcript:\n{clipped}"
     )
-    out = _run(get_fireworks_response2(user_id, prompt, "user", None, 0.2))
+    # get_fireworks_response2 calls credits.has_ai_credits(); it needs a REAL
+    # Credits instance. Passing None raised AttributeError, which propagated out
+    # of end_call → the call couldn't be ended and no minutes were produced.
+    from credits_route.route import Credits
+
+    out = _run(get_fireworks_response2(user_id, prompt, "user", Credits(), 0.2))
     if not out or out == "INSUFFICIENT":
         # Fall back to the raw transcript so notes are never silently empty.
         out = transcript[:4000]
