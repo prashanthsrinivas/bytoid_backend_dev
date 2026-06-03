@@ -2481,10 +2481,12 @@ async def _analyze_single_row_policy(
         f"introductory statements that apply to everything, adjacent-but-different subjects, "
         f"and statements that merely COULD be read to cover the row. If a compliance auditor "
         f"would push back on the link as too generic, do NOT assign it. "
-        f"When in doubt, EXCLUDE. Returning an empty list is correct when no statement "
-        f"specifically applies — broad coverage is a failure mode, not a goal. "
         f"Prefer the few most specific statements over many loosely-related ones; a row "
-        f"typically maps to 0–3 statements, not 5+. "
+        f"typically maps to 1–3 statements, not 5+. Broad coverage is a failure mode, not "
+        f"a goal — but so is missing a statement that genuinely governs the row. "
+        f"If ANY statement directly applies, return at least 1 (the single most specific). "
+        f"Only return an empty list when the row is completely unrelated to every statement "
+        f"in this policy. "
         f"TRACKER ROW: {row_json} "
         f"POLICY STATEMENTS (each has an index and statement_id): {stmts_json} "
         f'Return ONLY valid JSON (no markdown, no explanation): '
@@ -2726,8 +2728,17 @@ async def quality_review_policy_assignments(
     reviewed = []
     for a in assignments:
         row_id = a.get("row_id")
+        original_indices = a.get("stmt_indices", [])
         if row_id in review_map:
-            reviewed.append({"row_id": row_id, "stmt_indices": list(review_map[row_id])})
+            kept = list(review_map[row_id])
+            # Minimum-1 guarantee: if the strict reviewer stripped every match
+            # but the first pass DID propose one, keep the single best candidate.
+            # Without this, broad/umbrella policies (e.g. an Information Security
+            # Policy) get dropped to zero by the strict review even when a row
+            # clearly applies — mirroring quality_review_framework_assignments.
+            if not kept and original_indices:
+                kept = original_indices[:1]
+            reviewed.append({"row_id": row_id, "stmt_indices": kept})
         else:
             reviewed.append(a)
     return reviewed
