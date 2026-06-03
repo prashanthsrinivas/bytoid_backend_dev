@@ -128,22 +128,6 @@ _DDL = [
       PRIMARY KEY (call_id),
       INDEX idx_thread (thread_id, started_at)
     )""",
-    # Live transcript segments for an in-house audio call. Each participant's
-    # mic is chunked at silence and transcribed (Whisper) independently, so rows
-    # arrive concurrently and possibly out of order. We append one row per chunk
-    # (never read-modify-write a transcript blob) and assemble the full transcript
-    # ORDER BY client_ts at end_call — so concurrent/late chunks never scramble it.
-    """CREATE TABLE IF NOT EXISTS chat_call_segment (
-      segment_id       CHAR(36)     NOT NULL,
-      call_id          CHAR(36)     NOT NULL,
-      sender_user_id   VARCHAR(64)  NULL,
-      lang             VARCHAR(8)   NOT NULL DEFAULT 'en',
-      text             TEXT         NOT NULL,
-      client_ts        BIGINT       NOT NULL DEFAULT 0,
-      created_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (segment_id),
-      INDEX idx_call (call_id, client_ts)
-    )""",
 ]
 
 

@@ -37,60 +37,6 @@ async def websocket_handler():
 
             return jsonify({"statusCode": 200})
 
-        # -------- CALL SIGNALING (WebRTC) --------
-        # Relay in-house audio-call signaling between participants of a thread.
-        # Body: {from_user, to_user?, thread_id, call_id?, kind, data?}
-        #   to_user set   -> targeted (offer/answer/ice)
-        #   to_user unset -> broadcast to the thread's other participants (join/leave)
-        elif route == "signal":
-            body = json.loads(data.get("body", "{}"))
-            from_user = body.get("from_user")
-            to_user = body.get("to_user")
-            thread_id = body.get("thread_id")
-            kind = body.get("kind")
-            if not from_user or not kind:
-                return jsonify({"statusCode": 400, "error": "Missing fields"})
-
-            # Authorize the sender as a participant of the thread.
-            try:
-                from assessment_chat.service import _require_participant, list_participants
-                if thread_id:
-                    _require_participant(thread_id, from_user)
-            except Exception:
-                return jsonify({"statusCode": 403, "error": "not a participant"})
-
-            extra = {
-                "thread_id": thread_id,
-                "call_id": body.get("call_id"),
-                "from_user": from_user,
-                "kind": kind,
-                "data": body.get("data") or {},
-                "event": kind,
-            }
-
-            if to_user:
-                targets = [to_user]
-            elif thread_id:
-                try:
-                    targets = [
-                        p["user_id"] for p in list_participants(thread_id)
-                        if p.get("user_id") and p.get("user_id") != from_user
-                    ]
-                except Exception:
-                    targets = []
-            else:
-                targets = []
-
-            for uid in targets:
-                try:
-                    await ws_service.emit(
-                        user_id=uid, message="", scope="user",
-                        msg_type="call_signal", feature="call_signal", extra=extra,
-                    )
-                except Exception:
-                    pass
-            return jsonify({"statusCode": 200})
-
         return jsonify({"statusCode": 400, "error": "Unknown route"})
 
     except Exception as e:

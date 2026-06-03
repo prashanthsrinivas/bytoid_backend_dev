@@ -327,9 +327,10 @@ def email_inbound():
 
 @assessment_chat_bp.route("/call/start", methods=["POST"])
 def call_start():
-    """Start an audio call (Google Meet) from the thread.
+    """Create an external meeting (Google Meet / Teams) from the thread.
 
-    Body: {user_id, thread_id, title?, duration_minutes?}
+    Body: {user_id, thread_id, provider? ('google'|'microsoft'), start_time?
+    (ISO 8601, omit for instant), duration_minutes?, title?}
     """
     user_id = _caller()
     if not user_id:
@@ -342,207 +343,12 @@ def call_start():
         from assessment_chat.audio import start_call
         result = start_call(
             thread_id, user_id,
+            provider=body.get("provider"),
+            start_time=body.get("start_time"),
+            duration_minutes=int(body.get("duration_minutes") or 30),
             title=body.get("title"),
-            duration_minutes=int(body.get("duration_minutes") or 60),
         )
     except Exception as exc:
         return _err(exc)
     return jsonify(result), 201
 
-
-@assessment_chat_bp.route("/call/end", methods=["POST"])
-def call_end():
-    """End a call and produce meeting notes from a recording or transcript.
-
-    Body: {user_id, call_id, transcript? | audio_path? | audio_s3_key?}
-    """
-    user_id = _caller()
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-    body = request.get_json(silent=True) or {}
-    call_id = body.get("call_id")
-    if not call_id:
-        return jsonify({"error": "call_id is required"}), 400
-    try:
-        from assessment_chat.audio import end_call
-        result = end_call(
-            call_id, user_id,
-            transcript=body.get("transcript"),
-            audio_path=body.get("audio_path"),
-            audio_s3_key=body.get("audio_s3_key"),
-        )
-    except Exception as exc:
-        return _err(exc)
-
-    # Auto-file the Minutes of Meeting into notes (best-effort). Requires an
-    # internal-side actor; if the ender is assessee-side this no-ops and the UI
-    # still shows the MoM for an internal user to file manually.
-    result["notes_filed"] = False
-    try:
-        if (result.get("summary") or "").strip():
-            from assessment_chat.audio import summary_to_notes
-            filed = summary_to_notes(call_id, user_id, target="both")
-            result["notes_filed"] = True
-            result["notes_message"] = filed.get("message")
-    except Exception as exc:
-        logger.debug("auto-file MoM skipped: %s", exc)
-    return jsonify(result), 200
-
-
-@assessment_chat_bp.route("/call/active", methods=["GET"])
-def call_active():
-    """Return the thread's currently-active call so a late/reloaded participant
-    can join it. Query: user_id, thread_id."""
-    user_id = _caller()
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-    thread_id = request.args.get("thread_id")
-    if not thread_id:
-        return jsonify({"error": "thread_id is required"}), 400
-    try:
-        from assessment_chat.audio import get_active_call
-        result = get_active_call(thread_id, user_id)
-    except Exception as exc:
-        return _err(exc)
-    return jsonify(result), 200
-
-
-@assessment_chat_bp.route("/call/transcribe-chunk", methods=["POST"])
-def call_transcribe_chunk():
-    """Transcribe one live mic chunk and broadcast it to the thread.
-
-    multipart/form-data: {user_id, call_id, lang?, client_ts?, audio}
-    """
-    raw_uid = request.form.get("user_id")
-    user_id = parse_composite_user_id(raw_uid)[1] if raw_uid else None
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-    call_id = request.form.get("call_id")
-    audio = request.files.get("audio")
-    if not call_id or audio is None:
-        return jsonify({"error": "call_id and audio are required"}), 400
-
-    import os
-    import tempfile
-
-    suffix = os.path.splitext(audio.filename or "")[1] or ".webm"
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            audio.save(tmp.name)
-            tmp_path = tmp.name
-        from assessment_chat.audio import transcribe_chunk
-        result = transcribe_chunk(
-            call_id, user_id, tmp_path,
-            lang=request.form.get("lang"),
-            client_ts=int(request.form.get("client_ts") or 0),
-        )
-    except Exception as exc:
-        return _err(exc)
-    finally:
-        if tmp_path:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-    return jsonify(result), 200
-
-
-@assessment_chat_bp.route("/call/ice", methods=["GET"])
-def call_ice():
-    """ICE servers for the in-house WebRTC call.
-
-    Preferred: mint **ephemeral** TURN credentials from a Kinesis Video Streams
-    WebRTC signaling channel (``KVS_SIGNALING_CHANNEL_ARN``) — managed TURN, no
-    server to run, creds rotate (~5 min TTL). Falls back to static ``TURN_*`` env,
-    and always returns a STUN server so calls work on permissive networks even if
-    TURN is unconfigured.
-    """
-    import os
-    import re
-
-    region = os.getenv("KVS_REGION") or os.getenv("AWS_REGION") or "ca-central-1"
-    # Default to the provisioned KVS channel so no env var is required; override
-    # via KVS_SIGNALING_CHANNEL_ARN if it ever changes.
-    channel_arn = os.getenv("KVS_SIGNALING_CHANNEL_ARN") or (
-        "arn:aws:kinesisvideo:ca-central-1:394711685916:channel/bytoid-call-turn/1780445748898"
-    )
-    # Use the same static IAM-user keys the rest of the app uses (S3/Polly); fall
-    # back to the default credential chain if they aren't set.
-    _ak = os.getenv("AWS_ACCESS_KEY_ID")
-    _sk = os.getenv("AWS_SECRET_ACCESS_KEY")
-    _creds = {"aws_access_key_id": _ak, "aws_secret_access_key": _sk} if _ak and _sk else {}
-
-    ice = [{"urls": os.getenv("STUN_URL", f"stun:stun.kinesisvideo.{region}.amazonaws.com:443")}]
-    # Optional, removable diagnostics: GET ...?debug=1 reports why TURN is absent
-    # (env not set vs IAM/endpoint failure) without needing server logs.
-    debug = request.args.get("debug")
-    turn_status = "env_missing" if not channel_arn else "ok"
-    turn_error = None
-
-    if channel_arn:
-        try:
-            import boto3
-            kv = boto3.client("kinesisvideo", region_name=region, **_creds)
-            ep = kv.get_signaling_channel_endpoint(
-                ChannelARN=channel_arn,
-                SingleMasterChannelEndpointConfiguration={"Protocols": ["HTTPS"], "Role": "VIEWER"},
-            )
-            https = next(
-                e["ResourceEndpoint"] for e in ep["ResourceEndpointList"] if e["Protocol"] == "HTTPS"
-            )
-            signaling = boto3.client("kinesis-video-signaling", endpoint_url=https, region_name=region, **_creds)
-            client_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", (_caller() or "viewer"))[:256] or "viewer"
-            cfg = signaling.get_ice_server_config(ChannelARN=channel_arn, ClientId=client_id)
-            servers = cfg.get("IceServerList", [])
-            for s in servers:
-                ice.append({"urls": s["Uris"], "username": s["Username"], "credential": s["Password"]})
-            turn_status = "ok" if servers else "no_servers_returned"
-        except Exception as exc:
-            logger.warning("KVS ICE config unavailable, STUN-only: %s", exc)
-            turn_status = "error"
-            turn_error = f"{type(exc).__name__}: {exc}"
-    else:
-        turn_url = os.getenv("TURN_URL")
-        if turn_url:
-            server = {"urls": turn_url}
-            if os.getenv("TURN_USERNAME"):
-                server["username"] = os.getenv("TURN_USERNAME")
-            if os.getenv("TURN_CREDENTIAL"):
-                server["credential"] = os.getenv("TURN_CREDENTIAL")
-            ice.append(server)
-            turn_status = "static_env"
-
-    payload = {"ice_servers": ice}
-    if debug:
-        payload["turn_status"] = turn_status
-        payload["region"] = region
-        payload["channel_arn_set"] = bool(channel_arn)
-        if turn_error:
-            payload["turn_error"] = turn_error
-    return jsonify(payload), 200
-
-
-@assessment_chat_bp.route("/call/summary-to-notes", methods=["POST"])
-def call_summary_to_notes():
-    """File a call's summary into the chat and/or workflow notes.
-
-    Body: {user_id, call_id, target? ('chat'|'workflow'|'both'), visibility?}
-    """
-    user_id = _caller()
-    if not user_id:
-        return jsonify({"error": "user_id is required"}), 400
-    body = request.get_json(silent=True) or {}
-    call_id = body.get("call_id")
-    if not call_id:
-        return jsonify({"error": "call_id is required"}), 400
-    try:
-        from assessment_chat.audio import summary_to_notes
-        result = summary_to_notes(
-            call_id, user_id,
-            target=body.get("target", "both"),
-            visibility=body.get("visibility", "internal"),
-        )
-    except Exception as exc:
-        return _err(exc)
-    return jsonify(result), 200
