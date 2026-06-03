@@ -465,6 +465,11 @@ def call_ice():
     channel_arn = os.getenv("KVS_SIGNALING_CHANNEL_ARN")
 
     ice = [{"urls": os.getenv("STUN_URL", f"stun:stun.kinesisvideo.{region}.amazonaws.com:443")}]
+    # Optional, removable diagnostics: GET ...?debug=1 reports why TURN is absent
+    # (env not set vs IAM/endpoint failure) without needing server logs.
+    debug = request.args.get("debug")
+    turn_status = "env_missing" if not channel_arn else "ok"
+    turn_error = None
 
     if channel_arn:
         try:
@@ -480,10 +485,14 @@ def call_ice():
             signaling = boto3.client("kinesis-video-signaling", endpoint_url=https, region_name=region)
             client_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", (_caller() or "viewer"))[:256] or "viewer"
             cfg = signaling.get_ice_server_config(ChannelARN=channel_arn, ClientId=client_id)
-            for s in cfg.get("IceServerList", []):
+            servers = cfg.get("IceServerList", [])
+            for s in servers:
                 ice.append({"urls": s["Uris"], "username": s["Username"], "credential": s["Password"]})
+            turn_status = "ok" if servers else "no_servers_returned"
         except Exception as exc:
             logger.warning("KVS ICE config unavailable, STUN-only: %s", exc)
+            turn_status = "error"
+            turn_error = f"{type(exc).__name__}: {exc}"
     else:
         turn_url = os.getenv("TURN_URL")
         if turn_url:
@@ -493,8 +502,16 @@ def call_ice():
             if os.getenv("TURN_CREDENTIAL"):
                 server["credential"] = os.getenv("TURN_CREDENTIAL")
             ice.append(server)
+            turn_status = "static_env"
 
-    return jsonify({"ice_servers": ice}), 200
+    payload = {"ice_servers": ice}
+    if debug:
+        payload["turn_status"] = turn_status
+        payload["region"] = region
+        payload["channel_arn_set"] = bool(channel_arn)
+        if turn_error:
+            payload["turn_error"] = turn_error
+    return jsonify(payload), 200
 
 
 @assessment_chat_bp.route("/call/summary-to-notes", methods=["POST"])
