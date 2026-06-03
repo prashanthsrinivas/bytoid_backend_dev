@@ -4777,6 +4777,7 @@ async def _update_policy_worker_impl(data: dict, job_id: str = None) -> dict:
     doc_type = pol_data.get("type", "policy")
 
     statements = await fetch_policy_statements(policy_id, version=policy_version)
+    stmt_source = "lancedb"
     if not statements:
         raw_sections = pol_data.get("sections", [])
         statements = [
@@ -4784,6 +4785,12 @@ async def _update_policy_worker_impl(data: dict, job_id: str = None) -> dict:
             for sec in raw_sections
             for i, s in enumerate(sec.get("statements", []))
         ]
+        stmt_source = "yaml_fallback"
+
+    logger.info(
+        "policy remap: policy=%s tracker=%s loaded %d statements (source=%s, version=%s)",
+        policy_id, tracker_id, len(statements), stmt_source, policy_version,
+    )
 
     tracker_meta, tracker_data = _load_tracker(user_id, tracker_id)
     if not tracker_meta or not tracker_data:
@@ -4856,6 +4863,15 @@ async def _update_policy_worker_impl(data: dict, job_id: str = None) -> dict:
             user_id=user_id,
             credits=credits,
             on_row_done=on_row_reviewed,
+        )
+
+        proposed_rows = len([a for a in ai_result.get("assignments", []) if a.get("stmt_indices")])
+        kept_rows = len([a for a in assignments if a.get("stmt_indices")])
+        logger.info(
+            "policy remap: policy=%s tracker=%s — first-pass proposed %d rows, "
+            "review kept %d rows (of %d total rows, %d statements)",
+            policy_id, tracker_id, proposed_rows, kept_rows,
+            len(rows_input), len(statements),
         )
 
         stmts_by_idx = {i: s for i, s in enumerate(statements)}
