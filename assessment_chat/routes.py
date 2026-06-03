@@ -450,19 +450,50 @@ def call_transcribe_chunk():
 
 @assessment_chat_bp.route("/call/ice", methods=["GET"])
 def call_ice():
-    """ICE servers for the in-house WebRTC call. STUN is always returned; TURN is
-    included when configured (required for reliable cross-network connectivity)."""
-    import os
+    """ICE servers for the in-house WebRTC call.
 
-    ice = [{"urls": os.getenv("STUN_URL", "stun:stun.l.google.com:19302")}]
-    turn_url = os.getenv("TURN_URL")
-    if turn_url:
-        server = {"urls": turn_url}
-        if os.getenv("TURN_USERNAME"):
-            server["username"] = os.getenv("TURN_USERNAME")
-        if os.getenv("TURN_CREDENTIAL"):
-            server["credential"] = os.getenv("TURN_CREDENTIAL")
-        ice.append(server)
+    Preferred: mint **ephemeral** TURN credentials from a Kinesis Video Streams
+    WebRTC signaling channel (``KVS_SIGNALING_CHANNEL_ARN``) — managed TURN, no
+    server to run, creds rotate (~5 min TTL). Falls back to static ``TURN_*`` env,
+    and always returns a STUN server so calls work on permissive networks even if
+    TURN is unconfigured.
+    """
+    import os
+    import re
+
+    region = os.getenv("KVS_REGION") or os.getenv("AWS_REGION") or "ca-central-1"
+    channel_arn = os.getenv("KVS_SIGNALING_CHANNEL_ARN")
+
+    ice = [{"urls": os.getenv("STUN_URL", f"stun:stun.kinesisvideo.{region}.amazonaws.com:443")}]
+
+    if channel_arn:
+        try:
+            import boto3
+            kv = boto3.client("kinesisvideo", region_name=region)
+            ep = kv.get_signaling_channel_endpoint(
+                ChannelARN=channel_arn,
+                SingleMasterChannelEndpointConfiguration={"Protocols": ["HTTPS"], "Role": "VIEWER"},
+            )
+            https = next(
+                e["ResourceEndpoint"] for e in ep["ResourceEndpointList"] if e["Protocol"] == "HTTPS"
+            )
+            signaling = boto3.client("kinesis-video-signaling", endpoint_url=https, region_name=region)
+            client_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", (_caller() or "viewer"))[:256] or "viewer"
+            cfg = signaling.get_ice_server_config(ChannelARN=channel_arn, ClientId=client_id)
+            for s in cfg.get("IceServerList", []):
+                ice.append({"urls": s["Uris"], "username": s["Username"], "credential": s["Password"]})
+        except Exception as exc:
+            logger.warning("KVS ICE config unavailable, STUN-only: %s", exc)
+    else:
+        turn_url = os.getenv("TURN_URL")
+        if turn_url:
+            server = {"urls": turn_url}
+            if os.getenv("TURN_USERNAME"):
+                server["username"] = os.getenv("TURN_USERNAME")
+            if os.getenv("TURN_CREDENTIAL"):
+                server["credential"] = os.getenv("TURN_CREDENTIAL")
+            ice.append(server)
+
     return jsonify({"ice_servers": ice}), 200
 
 
