@@ -4739,7 +4739,7 @@ def remove_tracker_policy():
         return jsonify({"error": "Internal server error"}), 500
 
 
-async def _update_policy_worker(data: dict, job_id: str = None) -> dict:
+async def _update_policy_worker_impl(data: dict, job_id: str = None) -> dict:
     """Re-run AI matching for an existing policy column after a policy edit."""
     baseuser = str(data.get("user_id", ""))
     tracker_id = data.get("tracker_id")
@@ -4879,6 +4879,36 @@ async def _update_policy_worker(data: dict, job_id: str = None) -> dict:
                 if new_entries:
                     rows_assigned += 1
 
+    # Stamp the column with evaluation metadata so the frontend can tell
+    # "analyzed — no matching statements found" (empty cell, eval timestamp set)
+    # apart from an un-evaluated column. Mirrors _add_policy_worker_impl; without
+    # this a re-map that lands on 0 rows looks identical to "never analyzed".
+    from datetime import datetime as _dt, timezone as _tz
+    pol_col["last_evaluated_at"] = _dt.now(_tz.utc).isoformat()
+    pol_col["evaluated_rows"] = len(rows_for_analysis)
+    pol_col["matched_rows"] = rows_assigned
+    pol_col["statements_considered"] = len(statements)
+
+    # Refresh the reverse-lookup graph in RDS to match the new assignments.
+    tracker_abbrev = tracker_meta.get("tracker_abbrev")
+    try:
+        from services.statement_tracker_refs import replace_cell_refs
+        for row in rows_for_analysis:
+            entries = row.get("values", {}).get(pol_col_id) or []
+            replace_cell_refs(
+                tracker_id, row.get("row_id"), pol_col_id, policy_id, doc_type,
+                tracker_abbrev,
+                [
+                    {"statement_id": e.get("statement_id"), "status": e.get("status", "not_assessed")}
+                    for e in entries if e.get("statement_id")
+                ],
+            )
+    except Exception as ref_exc:
+        logging.warning(
+            "statement_tracker_refs upsert failed during remap for tracker=%s policy=%s: %s — "
+            "nightly reconcile will heal", tracker_id, policy_id, ref_exc,
+        )
+
     # Update policy list entry with new version
     for p in tracker_data.get("policies", []):
         if p["id"] == policy_id:
@@ -4900,8 +4930,72 @@ async def _update_policy_worker(data: dict, job_id: str = None) -> dict:
         metadata={"tracker_id": tracker_id, "policy_id": policy_id, "version": policy_version, "rows_assigned": rows_assigned},
     )
 
-    await emit(msg_builder_main.job_progress(job_id, session_id, "done", f"Re-mapped — {rows_assigned} rows assigned", 100))
+    # Terminal completion event — the client dialog keys on job_success (not a
+    # progress=100 tick) to close/refresh. The previous code only emitted a
+    # progress=100 "done" tick, so the re-map appeared to never finish.
+    tracker_name = tracker_meta.get("name") or "tracker"
+    await emit(msg_builder_main.job_success(job_id, session_id, f"Re-mapped — {rows_assigned} rows assigned"))
+    if rows_assigned == 0:
+        chat_msg = (
+            f"Re-mapped '{policy_name}' on '{tracker_name}', but no rows matched — "
+            f"the policy may have no statements to map. Check its Policy Statements section."
+        )
+    else:
+        chat_msg = f"Re-mapped '{policy_name}' on '{tracker_name}' — {rows_assigned} rows mapped"
+    await emit(msg_builder_main.chat_status(
+        chat_msg,
+        feature="tracker_policy_mapping",
+        status="success",
+        job_id=job_id,
+        session_id=session_id,
+    ))
     return {"rows_assigned": rows_assigned, "policy_id": policy_id, "version": policy_version}
+
+
+async def _update_policy_worker(data: dict, job_id: str = None) -> dict:
+    """Run the re-map worker, guaranteeing a terminal WS event on failure.
+
+    On any failure, emit ``job_error`` (mirroring _add_policy_worker) so the
+    client dialog stops waiting, then re-raise so JobManager records it.
+    """
+    try:
+        return await _update_policy_worker_impl(data, job_id)
+    except Exception as e:
+        session_id = data.get("session_id")
+        if job_id and session_id:
+            _logged_in, user_id = parse_composite_user_id(str(data.get("user_id", "")))
+            try:
+                err = msg_builder_main.job_error(job_id, session_id, str(e))
+                await ws_service.emit(
+                    user_id=user_id,
+                    message=err.get("message"),
+                    scope=err.get("scope", "job"),
+                    session_id=err.get("session_id"),
+                    job_id=err.get("job_id"),
+                    msg_type=err.get("type"),
+                    stage=err.get("stage"),
+                    progress=err.get("progress"),
+                    feature="tracker_policy_mapping",
+                )
+                chat = msg_builder_main.chat_status(
+                    f"Policy re-map failed: {str(e)[:200]}",
+                    feature="tracker_policy_mapping",
+                    status="error",
+                    job_id=job_id,
+                    session_id=session_id,
+                )
+                await ws_service.emit(
+                    user_id=user_id,
+                    message=chat.get("message"),
+                    scope=chat.get("scope", "global"),
+                    session_id=chat.get("session_id"),
+                    job_id=chat.get("job_id"),
+                    msg_type=chat.get("type"),
+                    feature="tracker_policy_mapping",
+                )
+            except Exception:
+                pass
+        raise
 
 
 @tracker_bp.route("/tracker/update-policy", methods=["POST"])
