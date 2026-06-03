@@ -462,7 +462,16 @@ def call_ice():
     import re
 
     region = os.getenv("KVS_REGION") or os.getenv("AWS_REGION") or "ca-central-1"
-    channel_arn = os.getenv("KVS_SIGNALING_CHANNEL_ARN")
+    # Default to the provisioned KVS channel so no env var is required; override
+    # via KVS_SIGNALING_CHANNEL_ARN if it ever changes.
+    channel_arn = os.getenv("KVS_SIGNALING_CHANNEL_ARN") or (
+        "arn:aws:kinesisvideo:ca-central-1:394711685916:channel/bytoid-call-turn/1780445748898"
+    )
+    # Use the same static IAM-user keys the rest of the app uses (S3/Polly); fall
+    # back to the default credential chain if they aren't set.
+    _ak = os.getenv("AWS_ACCESS_KEY_ID")
+    _sk = os.getenv("AWS_SECRET_ACCESS_KEY")
+    _creds = {"aws_access_key_id": _ak, "aws_secret_access_key": _sk} if _ak and _sk else {}
 
     ice = [{"urls": os.getenv("STUN_URL", f"stun:stun.kinesisvideo.{region}.amazonaws.com:443")}]
     # Optional, removable diagnostics: GET ...?debug=1 reports why TURN is absent
@@ -474,7 +483,7 @@ def call_ice():
     if channel_arn:
         try:
             import boto3
-            kv = boto3.client("kinesisvideo", region_name=region)
+            kv = boto3.client("kinesisvideo", region_name=region, **_creds)
             ep = kv.get_signaling_channel_endpoint(
                 ChannelARN=channel_arn,
                 SingleMasterChannelEndpointConfiguration={"Protocols": ["HTTPS"], "Role": "VIEWER"},
@@ -482,7 +491,7 @@ def call_ice():
             https = next(
                 e["ResourceEndpoint"] for e in ep["ResourceEndpointList"] if e["Protocol"] == "HTTPS"
             )
-            signaling = boto3.client("kinesis-video-signaling", endpoint_url=https, region_name=region)
+            signaling = boto3.client("kinesis-video-signaling", endpoint_url=https, region_name=region, **_creds)
             client_id = re.sub(r"[^a-zA-Z0-9_.-]", "_", (_caller() or "viewer"))[:256] or "viewer"
             cfg = signaling.get_ice_server_config(ChannelARN=channel_arn, ClientId=client_id)
             servers = cfg.get("IceServerList", [])
