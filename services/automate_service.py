@@ -178,13 +178,13 @@ class AutoMateService:
             "and a suitable file type/extension (txt, md, docx, pptx, css, html). "
             "Return only as 'filename.extension'."
         )
-        suggested_file = await get_fireworks_response2(
+        suggested_file = (await get_fireworks_response2(
             user_message=filename_and_type_prompt,
             role="system",
             temp=0.7,
             user_id=self.userid,
             credits=self.credits,
-        ).strip()
+        )).strip()
 
         # 3. Fallback if AI returns invalid
         if not suggested_file or "." not in suggested_file:

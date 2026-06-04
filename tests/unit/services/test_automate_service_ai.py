@@ -57,23 +57,12 @@ def test_create_custom_email_body_threads_dynamic_args_and_business_info():
     assert "Customer Name: Ada" in prompt and "Plan: Pro" in prompt   # title-cased keys
 
 
-class _AwaitStr(str):
-    """A str that is also awaitable and whose .strip() stays awaitable — matches
-    generate_file_from_ai's ``await get_fireworks_response2(...).strip()`` usage."""
-
-    def __await__(self):
-        async def _coro():
-            return str(self)
-        return _coro().__await__()
-
-    def strip(self, *a):
-        return _AwaitStr(str.strip(self, *a))
-
-
 def test_generate_file_from_ai_writes_txt_and_returns_path():
+    # After the await-precedence fix, the LLM call is a normal async coroutine —
+    # a plain AsyncMock returning a str is the realistic mock (the previous
+    # awaitable-string hack was only needed to get past the bug).
     svc = _svc()
-    fw = MagicMock(return_value=_AwaitStr("report.txt"))
-    with patch.object(au, "get_fireworks_response2", fw), \
+    with patch.object(au, "get_fireworks_response2", AsyncMock(return_value="report.txt")), \
          patch.object(au, "load_yaml_file",
                       return_value={"generate_file_content": {"instructions": "make"}}):
         out = asyncio.run(svc.generate_file_from_ai("write a report"))

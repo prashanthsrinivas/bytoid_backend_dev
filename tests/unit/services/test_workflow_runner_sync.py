@@ -50,6 +50,9 @@ def test_base_name(filename, expected):
     ("nope not at all", False),
     ("", False),
     ("123 !!!", False),
+    # regression (Flaw 4): explicit negation overrides an incidental yes-word
+    ("no, not yes", False),
+    ("not sure", False),
 ])
 def test_is_yes(text, expected):
     assert _runner().is_yes(text) is expected

@@ -14,6 +14,49 @@ realistic input) are logged but not blocking.
   module; tracked here as a suite-poisoning instance the §3 isolation discipline is
   meant to prevent. Workflow/playbook tests pass cleanly in isolation (280 passed).
 
+## Production-code logic flaws (found by source audit, fixed)
+
+These are real source bugs (not test-infra), each fixed with a regression test.
+
+### BUG-1 — `generate_file_from_ai` crashed on every call (await precedence)
+- **File:** `services/automate_service.py` (2nd LLM call).
+- **Cause:** `await get_fireworks_response2(...).strip()` parses as
+  `await (coro.strip())` → `.strip()` on a coroutine → `AttributeError`; no
+  try/except, so the function always raised.
+- **Fix:** `(await get_fireworks_response2(...)).strip()`.
+- **Test:** `tests/unit/services/test_automate_service_ai.py` (now uses a clean
+  AsyncMock; the prior awaitable-string hack existed only to get past the bug).
+
+### BUG-2 — `get_current_chats` returned `None` on a valid state
+- **File:** `services/workflow_service.py`.
+- **Cause:** when `chat_log` was truthy but `last_chat_summarized` falsy, no
+  branch returned → implicit `None` → every caller doing `chats_obj.get(...)`
+  raised `AttributeError`.
+- **Fix:** added the missing fall-through return (full chat).
+- **Test:** `test_get_current_chats_chatlog_present_but_unsummarized`.
+
+### BUG-3 — `_resolve_placeholders` returned unsubstituted placeholders
+- **File:** `services/workflow_service.py`.
+- **Cause:** when all referenced values were already available, the early
+  `return resolved, None` skipped the Step-4 substitution pass, so the function
+  call received the literal `{{step_N.field}}` strings (silent data corruption).
+- **Fix:** removed the early return so control reaches the substitution pass.
+- **Test:** `test_resolve_placeholders_already_resolved_via_pre_user_data` now
+  asserts the value is substituted (`"Bob"`).
+
+### BUG-4 — `is_yes` ignored negation
+- **File:** `services/workflow_service.py`. `"no, not yes"` → `True`.
+- **Fix:** explicit negation words override an incidental yes-word.
+- **Test:** `test_is_yes` regression cases (`"no, not yes"`, `"not sure"` → False).
+
+### BUG-5 — `get_attendees` emitted `[None]` when test env vars unset
+- **File:** `services/workflow_service.py` (testing branch).
+- **Fix:** return `[]` instead of `[None]`.
+
+(Retracted during audit: `_question_answer_stats` is correct by design — it only
+counts items that carry a `user_answer` field, so non-question outputs are
+rightly excluded.)
+
 ## Findings
 
 ### ADVISORY-1 — JSON/text parsers raise on non-`str` input

@@ -110,11 +110,16 @@ class WorkflowRunnerV2:
             "confirm",
             "correct",
         }
+        no_words = {"no", "nope", "nah", "not", "never", "dont", "cancel", "stop"}
         text = text.lower()
 
         # extract alphabetic words only
         words = re.findall(r"[a-zA-Z]+", text)
 
+        # An explicit negation overrides an incidental yes-word
+        # (e.g. "no, not yes" must not read as affirmative).
+        if any(word in no_words for word in words):
+            return False
         return any(word in yes_words for word in words)
 
     def get_current_execution_data(self):
@@ -154,13 +159,13 @@ class WorkflowRunnerV2:
             last_chat_check = chat_log.get("last_chat_summarized")
             last_summarization = chat_log.get("chat_summarization") or ""
             if last_chat_check:
-                if allchats:
-                    mixchats = allchats[-10:]
-                else:
-                    mixchats = []
+                mixchats = allchats[-10:] if allchats else []
                 return {"chat": mixchats, "chat_summarization": last_summarization}
-        else:
-            return {"chat": allchats, "chat_summarization": ""}
+            # chat_log exists but nothing summarized yet — return the full chat
+            # rather than falling through to an implicit None (which crashed
+            # every caller that does chats_obj.get("chat", ...)).
+            return {"chat": allchats, "chat_summarization": last_summarization}
+        return {"chat": allchats, "chat_summarization": ""}
 
     def generate_unique_id(self, existing_ids):
         while True:
@@ -1267,11 +1272,13 @@ class WorkflowRunnerV2:
         if self.testing:
             main_test_mail = os.getenv("TEST_EMAIL")
             secondary_mail = os.getenv("TEST_EMAIL2")
-            return (
-                [secondary_mail]
+            chosen = (
+                secondary_mail
                 if self.userdetails.get("email") == main_test_mail
-                else [main_test_mail]
+                else main_test_mail
             )
+            # Drop None when the test env vars are unset (avoids emailing None).
+            return [chosen] if chosen else []
 
         # Normalize different input types
         if isinstance(attendees, str):
@@ -1877,10 +1884,13 @@ class WorkflowRunnerV2:
                         unresolved_deps.setdefault(str(step_ref), []).append(field_name)
 
             if not unresolved_deps:
+                # All referenced values are already available — but we must still
+                # run the Step-4 substitution pass below, otherwise the literal
+                # "{{step_N.field}}" strings are returned unsubstituted. (Previously
+                # this early-returned ``resolved`` with placeholders intact.)
                 self.logger.debug(
-                    "_resolve_placeholders: all dependencies already resolved"
+                    "_resolve_placeholders: no unresolved deps; applying substitutions"
                 )
-                return resolved, None
 
             # Step 2: Sort step_refs in ascending order (handle both numeric and string IDs)
             def sort_key(ref):

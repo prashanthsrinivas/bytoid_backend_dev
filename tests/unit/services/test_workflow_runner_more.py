@@ -197,6 +197,18 @@ def test_get_current_chats_with_summary_returns_tail():
     assert out["chat"] == chats[-10:]          # last 10 only
 
 
+def test_get_current_chats_chatlog_present_but_unsummarized():
+    # regression (Flaw 2): chat_log exists but nothing summarized yet → must
+    # return the full chat, not implicitly None (which crashed callers).
+    r = _runner(workflow_json={
+        "chat": [{"m": 1}],
+        "chat_log": {"last_chat_summarized": None, "chat_summarization": ""},
+    })
+    out = r.get_current_chats()
+    assert out is not None
+    assert out["chat"] == [{"m": 1}]
+
+
 # ── get_attendees ─────────────────────────────────────────────────────────────
 
 def test_get_attendees_all_uses_contacts():
@@ -275,6 +287,9 @@ def test_resolve_placeholders_already_resolved_via_pre_user_data():
     import asyncio
     r = _runner(logger=MagicMock(), previous_data={},
                 workflow_json={"pre_user_data": {"name": "Bob"}})
-    _resolved, blocking = asyncio.run(
+    resolved, blocking = asyncio.run(
         r._resolve_placeholders({"greeting": "{{step_1.name}}"}))
     assert blocking is None        # dependency already satisfied → not blocked
+    # regression (Flaw 3): the already-available value must be substituted, not
+    # returned as the literal "{{step_1.name}}".
+    assert resolved["greeting"] == "Bob"
