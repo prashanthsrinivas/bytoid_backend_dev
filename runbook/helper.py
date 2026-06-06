@@ -47,7 +47,12 @@ from utils.app_configs import IS_DEV, FRAMEWORK_OWNER
 from .utils import *
 from .utils import _safe_json_parse
 from .utils import _safe_json_parse_full
-from .risk_engine import get_risk_config, compute_risk, risk_analysis_disabled
+from .risk_engine import (
+    get_risk_config,
+    compute_risk,
+    apply_risk_overrides,
+    risk_analysis_disabled,
+)
 from utils.scheduler import scheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -1549,6 +1554,31 @@ async def run_runbook_execution_engine(
             # backend computes risk_score, final_risk_score and risk_level here.
             computed = compute_risk(risk_data.get("risks", []), risk_cfg)
             computed["justification"] = risk_data.get("justification", "")
+
+            # Re-apply any manual risk overrides from the prior report so user edits
+            # survive a re-run. Anchor to the exact source report when result_id was
+            # threaded through; otherwise fall back to the runbook's latest result.
+            try:
+                prior = await dbserver.get_latest_runbook_result(
+                    user_id=user_id, runbook_id=runbook_id, result_id=result_id
+                )
+                prior_ra = None
+                if prior:
+                    prior_result = prior.get("result")
+                    if isinstance(prior_result, str):
+                        prior_result = _safe_json_parse(prior_result) or {}
+                    prior_ra = (prior_result or {}).get("risk_analysis")
+                computed, dropped = apply_risk_overrides(computed, prior_ra)
+                if dropped:
+                    computed["dropped_overrides"] = dropped
+                    logger.info(
+                        "Re-run dropped %d manual risk override(s) for runbook %s",
+                        len(dropped),
+                        runbook_id,
+                    )
+            except Exception:
+                logger.warning("apply_risk_overrides (re-run) failed", exc_info=IS_DEV)
+
             merged_result["risk_analysis"] = computed
             merged_result["risk_score"] = computed["final_risk_score"]
 

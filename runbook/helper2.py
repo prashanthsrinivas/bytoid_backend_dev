@@ -27,7 +27,12 @@ from utils.app_configs import IS_DEV
 from .utils import *
 from .utils import _safe_json_parse_full
 from .utils import _safe_json_parse
-from .risk_engine import get_risk_config, compute_risk, risk_analysis_disabled
+from .risk_engine import (
+    get_risk_config,
+    compute_risk,
+    apply_risk_overrides,
+    risk_analysis_disabled,
+)
 from runbook.helper import run_evidence_analysis, reduce_data_for_report
 
 dbserver = LanceDBServer()
@@ -1028,6 +1033,22 @@ async def modify_run_runbook_execution_engine(
         # Deterministic scoring from the configured Impact x Likelihood scales.
         computed = compute_risk(risk_data.get("risks", []), risk_cfg)
         computed["justification"] = risk_data.get("justification", "")
+
+        # Re-apply manual risk overrides from the prior report (loaded into
+        # last_runbook_response via is_prev_needed) so user edits survive chat-modify.
+        try:
+            prior_ra = (last_runbook_response or {}).get("risk_analysis")
+            computed, dropped = apply_risk_overrides(computed, prior_ra)
+            if dropped:
+                computed["dropped_overrides"] = dropped
+                logger.info(
+                    "Chat-modify dropped %d manual risk override(s) for runbook %s",
+                    len(dropped),
+                    runbook_id,
+                )
+        except Exception:
+            logger.warning("apply_risk_overrides (modify) failed", exc_info=IS_DEV)
+
         merged_result["risk_analysis"] = computed
         merged_result["risk_score"] = computed["final_risk_score"]
 

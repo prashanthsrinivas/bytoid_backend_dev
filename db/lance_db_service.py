@@ -3928,6 +3928,7 @@ class LanceDBServer:
         user_id: str,
         result_id: str,
         new_result: dict,
+        risk_score=None,
     ):
         table = await self._open_or_create_runbook_results_table(user_id)
 
@@ -3949,6 +3950,14 @@ class LanceDBServer:
         # Only replace the result field; all other columns stay exactly as stored.
         updated_row = dict(existing)
         updated_row["result"] = self._enc(user_id, json.dumps(new_result))
+        # Keep the denormalized risk_score column in sync when an edit changes the
+        # report's overall score (e.g. a manual risk override). The blob and this
+        # column live in the same row written by one add(), so they cannot skew.
+        if risk_score is not None:
+            try:
+                updated_row["risk_score"] = float(risk_score)
+            except (TypeError, ValueError):
+                pass
 
         await asyncio.to_thread(lambda: table.add([updated_row]))
 

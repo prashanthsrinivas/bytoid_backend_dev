@@ -45,6 +45,7 @@ from services.audit_log_service import (
     RUNBOOK_SCHEDULED,
     RUNBOOK_EVIDENCE_UPDATED,
     RUNBOOK_EVIDENCE_ADMISSIBILITY_CHANGED,
+    RUNBOOK_RISK_UPDATED,
     REPORT_SHARED,
     REPORT_SHARE_REVOKED,
     build_audit_actor,
@@ -2406,6 +2407,241 @@ def patch_evidence_analysis(result_id):
 
     except Exception as e:
         logger.exception("patch_evidence_analysis error")
+        return jsonify({"error": str(e)}), 500
+
+
+@runbook_bp.route("/result/<result_id>/risk_analysis", methods=["PUT"])
+@permission_required_body("compliance.runbook.edit")
+def patch_risk_analysis(result_id):
+    """Manually override a report's risk levels (overall and/or per finding).
+
+    The risk engine computes risk deterministically; this lets a user override the
+    overall report risk and individual findings. Overrides are stamped with an
+    ``overridden`` flag so regeneration (re-run / chat-modify) re-applies them instead
+    of recomputing over them. Uses an optimistic-lock ``rev`` to avoid clobbering
+    concurrent edits. Manual label/score mismatches are allowed but recorded in the
+    audit log.
+
+    Body (all sections optional):
+      {
+        "user_id": "...",
+        "expected_rev": <int>,                       # current risk_analysis.rev
+        "report":   {"risk_level": "...", "final_risk_score": <n>}  | {"clear": true},
+        "findings": [{"finding_id": "...", "impact": <n>, "likelihood": <n>,
+                       "risk_score": <n>, "risk_level": "..."}  | {"finding_id": "...", "clear": true}],
+        "clear": true                                # reset the entire analysis
+      }
+    """
+    try:
+        from runbook.risk_engine import (
+            get_risk_config,
+            compute_risk,
+            _level_for_score,
+        )
+
+        data = request.get_json() or {}
+        base_user_id = session.get("user_id") or data.get("user_id")
+        if not base_user_id:
+            return jsonify({"error": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(base_user_id)
+
+        res = _run_async(dbserver.runbook_get_result(user_id, result_id))
+        if not res or res.get("status") == "not_found":
+            return jsonify({"error": "Result not found"}), 404
+
+        result_doc = res.get("result") or res
+        ra = result_doc.get("risk_analysis")
+        if not isinstance(ra, dict) or not ra:
+            return (
+                jsonify({"error": "This report has no editable risk analysis"}),
+                404,
+            )
+
+        # Optimistic lock: refuse a stale edit so concurrent edits don't clobber.
+        current_rev = int(ra.get("rev", 0) or 0)
+        expected_rev = data.get("expected_rev")
+        if expected_rev is not None and int(expected_rev) != current_rev:
+            return (
+                jsonify({
+                    "error": "stale_rev",
+                    "message": "This report was edited since you loaded it.",
+                    "current_rev": current_rev,
+                }),
+                409,
+            )
+
+        cfg = get_risk_config(user_id)
+        bands = cfg.get("bands") or []
+        band_labels = {b.get("label") for b in bands if isinstance(b, dict)}
+        impact_scale = int(cfg.get("impact_scale", 5) or 5)
+        likelihood_scale = int(cfg.get("likelihood_scale", 5) or 5)
+        max_score = impact_scale * likelihood_scale
+
+        def _recompute(risks):
+            """Re-derive engine values from each risk's impact/likelihood."""
+            inputs = [
+                {
+                    k: v
+                    for k, v in r.items()
+                    if k in ("threat", "vulnerability", "impact",
+                             "likelihood", "justification", "description")
+                }
+                for r in risks
+                if isinstance(r, dict)
+            ]
+            return compute_risk(inputs, cfg)
+
+        changes = {}
+        mismatch = False
+
+        # Full reset: drop every override and recompute from impact x likelihood.
+        if data.get("clear") and not isinstance(data.get("clear"), dict):
+            fresh = _recompute(ra.get("risks") or [])
+            fresh["justification"] = ra.get("justification", "")
+            ra = fresh
+            changes["cleared"] = "all"
+        else:
+            # --- Report-level override / clear ---
+            report = data.get("report")
+            if isinstance(report, dict):
+                if report.get("clear"):
+                    fresh = _recompute(ra.get("risks") or [])
+                    ra["final_risk_score"] = fresh["final_risk_score"]
+                    ra["risk_level"] = fresh["risk_level"]
+                    ra.pop("risk_overridden", None)
+                    changes["report"] = "cleared"
+                else:
+                    old = {"risk_level": ra.get("risk_level"),
+                           "final_risk_score": ra.get("final_risk_score")}
+                    lvl = report.get("risk_level")
+                    score = report.get("final_risk_score")
+                    if lvl is not None:
+                        if band_labels and lvl not in band_labels:
+                            return jsonify({"error": f"Unknown risk level '{lvl}'"}), 400
+                        ra["risk_level"] = lvl
+                    if score is not None:
+                        try:
+                            s = float(score)
+                        except (TypeError, ValueError):
+                            return jsonify({"error": "final_risk_score must be a number"}), 400
+                        if not (0 <= s <= max_score):
+                            return jsonify({"error": f"score must be 0..{max_score}"}), 400
+                        ra["final_risk_score"] = s
+                    ra["risk_overridden"] = True
+                    # Flag (but allow) a label that doesn't fall in its score's band.
+                    if (lvl is not None and score is not None
+                            and _level_for_score(ra["final_risk_score"], bands) != lvl):
+                        mismatch = True
+                    changes["report"] = {"old": old,
+                                         "new": {"risk_level": ra.get("risk_level"),
+                                                 "final_risk_score": ra.get("final_risk_score")}}
+
+            # --- Finding-level override / clear ---
+            findings = data.get("findings")
+            if isinstance(findings, list):
+                risks = ra.get("risks") or []
+                by_id = {r.get("finding_id"): r for r in risks if isinstance(r, dict)}
+                finding_changes = []
+                for f in findings:
+                    if not isinstance(f, dict):
+                        continue
+                    target = by_id.get(f.get("finding_id"))
+                    idx = f.get("index")
+                    if target is None and isinstance(idx, int) and 0 <= idx < len(risks):
+                        target = risks[idx]
+                    if target is None:
+                        continue
+                    fid = target.get("finding_id")
+                    if f.get("clear"):
+                        one = _recompute([target])
+                        if one.get("risks"):
+                            target["risk_score"] = one["risks"][0]["risk_score"]
+                            target["risk_level"] = one["risks"][0]["risk_level"]
+                        target.pop("overridden", None)
+                        finding_changes.append({"finding_id": fid, "cleared": True})
+                        continue
+                    old = {k: target.get(k) for k in ("impact", "likelihood",
+                                                      "risk_score", "risk_level")}
+                    for key in ("impact", "likelihood"):
+                        if key in f and f[key] is not None:
+                            scale = impact_scale if key == "impact" else likelihood_scale
+                            try:
+                                val = int(f[key])
+                            except (TypeError, ValueError):
+                                return jsonify({"error": f"{key} must be an integer"}), 400
+                            if not (1 <= val <= scale):
+                                return jsonify({"error": f"{key} must be 1..{scale}"}), 400
+                            target[key] = val
+                    if f.get("risk_score") is not None:
+                        try:
+                            sc = float(f["risk_score"])
+                        except (TypeError, ValueError):
+                            return jsonify({"error": "risk_score must be a number"}), 400
+                        if not (0 <= sc <= max_score):
+                            return jsonify({"error": f"risk_score must be 0..{max_score}"}), 400
+                        target["risk_score"] = sc
+                    if f.get("risk_level") is not None:
+                        if band_labels and f["risk_level"] not in band_labels:
+                            return jsonify({"error": f"Unknown risk level '{f['risk_level']}'"}), 400
+                        target["risk_level"] = f["risk_level"]
+                    target["overridden"] = True
+                    if (f.get("risk_level") is not None and target.get("risk_score") is not None
+                            and _level_for_score(target["risk_score"], bands) != f["risk_level"]):
+                        mismatch = True
+                    finding_changes.append({"finding_id": fid, "old": old,
+                                            "new": {k: target.get(k) for k in
+                                                    ("impact", "likelihood",
+                                                     "risk_score", "risk_level")}})
+                if finding_changes:
+                    changes["findings"] = finding_changes
+
+        if not changes:
+            return jsonify({"error": "No risk changes supplied"}), 400
+
+        # Bump the optimistic-lock counter and persist (blob + denormalized column).
+        new_rev = current_rev + 1
+        ra["rev"] = new_rev
+        result_doc["risk_analysis"] = ra
+        result_doc["risk_score"] = ra.get("final_risk_score")
+        _run_async(
+            dbserver.update_runbook_result(
+                user_id, result_id, result_doc,
+                risk_score=ra.get("final_risk_score"),
+            )
+        )
+
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(base_user_id)
+        log_audit_event(
+            action=RUNBOOK_RISK_UPDATED,
+            endpoint="/result/<result_id>/risk_analysis",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "result_id": result_id,
+                "changes": changes,
+                "label_score_mismatch": mismatch,
+                "rev": new_rev,
+            },
+        )
+        g.audit_logged = True
+
+        return (
+            jsonify({"success": True, "risk_analysis": ra,
+                     "label_score_mismatch": mismatch}),
+            200,
+        )
+
+    except Exception as e:
+        logger.exception("patch_risk_analysis error")
         return jsonify({"error": str(e)}), 500
 
 

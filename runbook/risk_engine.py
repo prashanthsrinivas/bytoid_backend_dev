@@ -11,6 +11,7 @@ The config is stored per-org as a JSON blob on the owner/admin ``users`` row
 """
 
 import copy
+import hashlib
 import json
 
 import pymysql
@@ -147,6 +148,25 @@ def _clamp(value, low, high):
     return max(low, min(high, n))
 
 
+def finding_id_for(risk):
+    """Deterministic, content-derived id for a single risk finding.
+
+    The LLM risk schema carries no stable identifier, so we hash the normalized
+    threat + vulnerability text. Identical finding content yields the same id across
+    runs, giving a match key that survives reordering (but not LLM rewording — that
+    case is surfaced as a dropped override rather than silently lost).
+    """
+    if not isinstance(risk, dict):
+        return ""
+    threat = str(risk.get("threat") or "").strip().lower()
+    vuln = str(risk.get("vulnerability") or "").strip().lower()
+    # Non-cryptographic: just a stable content fingerprint for matching findings.
+    digest = hashlib.sha1(
+        f"{threat}||{vuln}".encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
+    return digest[:12]
+
+
 def _level_for_score(score, bands):
     """Return the band label whose [min, max] contains ``score``."""
     for band in bands:
@@ -187,6 +207,7 @@ def compute_risk(risks, config=None):
         entry["likelihood"] = likelihood
         entry["risk_score"] = score
         entry["risk_level"] = _level_for_score(score, bands)
+        entry["finding_id"] = finding_id_for(risk)
         scored.append(entry)
 
     scores = [r["risk_score"] for r in scored]
@@ -202,6 +223,7 @@ def compute_risk(risks, config=None):
         "final_risk_score": final_score,
         "risk_level": _level_for_score(final_score, bands),
         "max_score": impact_scale * likelihood_scale,
+        "rev": 0,
         "config": {
             "impact_scale": impact_scale,
             "likelihood_scale": likelihood_scale,
@@ -209,6 +231,67 @@ def compute_risk(risks, config=None):
             "bands": bands,
         },
     }
+
+
+def apply_risk_overrides(computed, prior_risk_analysis):
+    """Re-apply a prior result's manual risk overrides onto a freshly computed analysis.
+
+    The risk engine recomputes everything deterministically on each generation; this
+    layers any user-set overrides from the previous report back on top so manual edits
+    survive re-runs and chat-modify. Report-level and finding-level overrides are
+    independent — a finding override never recomputes the report's ``final_risk_score``.
+
+    Returns ``(computed, dropped)`` where ``dropped`` lists finding overrides that had
+    no match in the freshly computed set (e.g. the LLM reworded/removed that finding).
+    Callers should surface ``dropped`` (e.g. via ``computed["dropped_overrides"]``) so
+    the change is never silently lost.
+    """
+    dropped = []
+    if not isinstance(computed, dict):
+        return computed, dropped
+    if not isinstance(prior_risk_analysis, dict) or not prior_risk_analysis:
+        return computed, dropped
+
+    # Carry the optimistic-lock counter forward so it stays monotonic across re-runs.
+    try:
+        computed["rev"] = int(prior_risk_analysis.get("rev", 0) or 0)
+    except (TypeError, ValueError):
+        computed["rev"] = 0
+
+    # Report-level override: copy verbatim, even if every finding changed.
+    if prior_risk_analysis.get("risk_overridden"):
+        if "final_risk_score" in prior_risk_analysis:
+            computed["final_risk_score"] = prior_risk_analysis["final_risk_score"]
+        if "risk_level" in prior_risk_analysis:
+            computed["risk_level"] = prior_risk_analysis["risk_level"]
+        computed["risk_overridden"] = True
+
+    # Finding-level overrides keyed by the stable content-hash finding_id.
+    prior_overrides = {}
+    for risk in prior_risk_analysis.get("risks") or []:
+        if isinstance(risk, dict) and risk.get("overridden"):
+            fid = risk.get("finding_id") or finding_id_for(risk)
+            if fid:
+                prior_overrides[fid] = risk
+
+    if prior_overrides:
+        matched = set()
+        for risk in computed.get("risks") or []:
+            if not isinstance(risk, dict):
+                continue
+            fid = risk.get("finding_id") or finding_id_for(risk)
+            override = prior_overrides.get(fid)
+            if override:
+                for key in ("impact", "likelihood", "risk_score", "risk_level"):
+                    if key in override:
+                        risk[key] = override[key]
+                risk["overridden"] = True
+                matched.add(fid)
+        for fid, override in prior_overrides.items():
+            if fid not in matched:
+                dropped.append(override)
+
+    return computed, dropped
 
 
 def validate_risk_config(config):
