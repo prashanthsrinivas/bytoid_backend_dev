@@ -66,6 +66,7 @@ PERMISSION_ROUTES = {
         "/wf-form",
         "/generate_ques_by_file",
         "/make_ans_by_files",
+        "/make_ans_by_cloud",
         "/evidence_ques_ans_attach_playbook",
         "/make_s3upload",
         "/clear_runbook_exists_playbook",

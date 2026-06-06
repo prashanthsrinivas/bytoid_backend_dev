@@ -2848,6 +2848,116 @@ async def answer_ques_file_bk(
     return result
 
 
+async def answer_ques_cloud_bk(
+    user_id,
+    filename,
+    step_id,
+    connectors,
+    job_id=None,
+    session_id=None,
+):
+    """Background worker: resolve the latest already-fetched cloud REST data for
+    the selected connectors, persist the raw JSON for the UI reveal button, and
+    AI-fill the workflow's assigned questions from it."""
+    from runbook.utils import resolve_connector_endpoint_data
+
+    credits = Credits()
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    # 1. Resolve the latest cached/scheduled run for each selected connector.
+    conn = connect_to_rds()
+    raw_blob = []
+    payload_parts = []
+    try:
+        for c in connectors or []:
+            provider = (c.get("provider") or "custom").lower()
+            endpoint_id = c.get("endpoint_id")
+            app_id = c.get("app_id")
+            if endpoint_id is None:
+                continue
+            try:
+                data_str, source = await resolve_connector_endpoint_data(
+                    conn, provider, endpoint_id, app_id, max_chars=16000
+                )
+            except Exception as e:
+                raw_blob.append(
+                    {
+                        "provider": provider,
+                        "app_id": app_id,
+                        "endpoint_id": endpoint_id,
+                        "error": str(e),
+                    }
+                )
+                continue
+            payload_parts.append(
+                f"[SOURCE provider={provider} app_id={app_id} "
+                f"endpoint_id={endpoint_id} ({source})]\n{data_str}"
+            )
+            try:
+                parsed = json.loads(data_str)
+            except Exception:
+                parsed = data_str
+            raw_blob.append(
+                {
+                    "provider": provider,
+                    "app_id": app_id,
+                    "endpoint_id": endpoint_id,
+                    "source": source,
+                    "data": parsed,
+                }
+            )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    cloud_payload = "\n\n".join(payload_parts)
+
+    # 2. Persist the raw fetched JSON for the UI "View source data" button.
+    raw_ref = job_id or uuid.uuid4().hex
+    try:
+        s3bucket().put_object(
+            Bucket=S3_BUCKET,
+            Key=f"{user_id}/workflow_autofill/{raw_ref}.json",
+            Body=json.dumps(raw_blob, default=str),
+            ContentType="application/json",
+        )
+    except Exception as e:
+        logger.warning("Failed to store autofill raw blob: %s", e)
+
+    if not cloud_payload.strip():
+        return {
+            "status": "error",
+            "message": "No cloud data available for the selected connectors",
+            "answered_now": 0,
+        }
+
+    # 3. AI-fill the assigned questions from the cloud data.
+    wf_loc = f"{user_id}/workflow/{base_name(filename=filename)}/{filename}"
+    workflow_json = read_json_from_s3(wf_loc)
+    if workflow_json:
+        for _field in _PLAYBOOK_CONTENT_FIELDS:
+            if _field in workflow_json:
+                workflow_json[_field] = _dec_pb(user_id, workflow_json[_field])
+
+    with WorkflowRunnerV2(
+        userid=user_id,
+        filename=filename,
+        workflowJson=workflow_json,
+        testing=True,
+        credits=credits,
+    ) as runner:
+        result = await runner.answer_ques_cloud_bk(
+            cloud_payload, step_id, raw_ref, connectors or []
+        )
+
+    if isinstance(result, dict):
+        result["raw_ref"] = raw_ref
+    return result
+
+
 @playbook_bp.route("/make_ans_by_files", methods=["POST"])
 @permission_required_body("workflow.process.edit")
 def generate_ans_files():
@@ -2962,6 +3072,75 @@ def generate_ans_files():
                     os.remove(path)
             except Exception as cleanup_error:
                 logger.debug("Cleanup failed for %s: %s", path, cleanup_error)
+
+
+@playbook_bp.route("/make_ans_by_cloud", methods=["POST"])
+@permission_required_body("workflow.process.edit")
+def generate_ans_cloud():
+    """Auto-fill a workflow's assigned questions from the latest already-fetched
+    cloud REST data (AWS/Azure/GCP). Mirrors /make_ans_by_files but the source is
+    cloud connector runs instead of uploaded files. Returns a background job_id."""
+    try:
+        data = request.get_json(force=True) or {}
+        user_id = data.get("user_id")
+        step_id = data.get("step_id")
+        wf_name = data.get("wf_name")
+        connectors = data.get("connectors") or []
+
+        if not user_id or not connectors:
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "message": "user_id and connectors are required",
+                    }
+                ),
+                400,
+            )
+        if not wf_name:
+            return jsonify({"status": "error", "message": "wf_name is required"}), 400
+
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
+        job_id = _run_async(
+            JobManager.submit_job(
+                answer_ques_cloud_bk,
+                user_id,
+                wf_name,
+                step_id,
+                connectors,
+            )
+        )
+
+        return jsonify(
+            {
+                "status": "accepted",
+                "job_id": job_id,
+                "message": "Processing started in background",
+            }
+        )
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/workflow/autofill/raw/<job_id>", methods=["GET"])
+def get_autofill_raw(job_id):
+    """Return the raw fetched cloud JSON stored for a cloud auto-fill run, scoped
+    to the requesting workflow owner (used by the 'View source data' button)."""
+    try:
+        user_id = request.args.get("user_id")
+        if not user_id:
+            return jsonify({"status": "error", "message": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+        # os.path.basename guards against path traversal in job_id
+        key = f"{user_id}/workflow_autofill/{os.path.basename(job_id)}.json"
+        data = read_json_from_s3(key)
+        if data is None:
+            return jsonify({"status": "error", "message": "Not found"}), 404
+        return jsonify({"status": "success", "data": data})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @playbook_bp.route("/evidence_ques_ans_attach_playbook", methods=["POST"])

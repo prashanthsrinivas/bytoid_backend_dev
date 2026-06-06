@@ -4352,6 +4352,133 @@ class WorkflowRunnerV2:
             "questions_needing_evidence": questions_needing_evidence,
         }
 
+    async def answer_ques_cloud_bk(self, cloud_payload, step_id, raw_ref, connectors):
+        """Auto-fill assigned questions from already-fetched cloud REST data.
+
+        Unlike answer_ques_file_bk (evidence-artifact centric), this reads the
+        latest cloud run JSON directly: per UNANSWERED question it asks the AI to
+        answer (within the question's options when present) and produce a short
+        justification, which is stored as the question's comment. Fills BLANKS
+        ONLY and never overwrites a user-entered answer/comment. `raw_ref` (an S3
+        key holding the fetched JSON) and `connectors` are stamped onto each
+        filled question as `autofill_source` so the UI can reveal the source data.
+        """
+        import re as _re
+
+        assigned_ques = self.workflow_json.get("assigned_questions", [])
+        if not assigned_ques:
+            return {"error": "No assigned questions found", "answered_now": 0}
+        if not cloud_payload or not str(cloud_payload).strip():
+            return {"error": "No cloud data found", "answered_now": 0}
+
+        execution_data = self.previous_data
+        chats = self.chat_history
+
+        def _safe_json_load(text):
+            text = (text or "").strip()
+            for start_char, end_char in [("{", "}"), ("[", "]")]:
+                try:
+                    s = text.find(start_char)
+                    e = text.rfind(end_char)
+                    if s != -1 and e != -1:
+                        fragment = _re.sub(r",\s*([}\]])", r"\1", text[s : e + 1])
+                        return json.loads(fragment)
+                except Exception:
+                    pass
+            return {}
+
+        # Questions already answered are skipped (fill blanks only).
+        answered_qids = set()
+        if isinstance(execution_data, dict):
+            for s_id, step_data in execution_data.items():
+                if step_id and str(s_id) != str(step_id):
+                    continue
+                for out in step_data.get("output", []):
+                    if out.get("user_answer"):
+                        answered_qids.add(out.get("id"))
+
+        # The fetched JSON can be large; cap the prompt context.
+        MAX_CONTEXT = 16000
+        context = str(cloud_payload)[:MAX_CONTEXT]
+        autofill_source = {
+            "type": "cloud",
+            "raw_ref": raw_ref,
+            "connectors": connectors or [],
+        }
+
+        def persist(qid, answer, comment):
+            updated = 0
+
+            def _apply(out_list):
+                nonlocal updated
+                for out in out_list:
+                    if out.get("id") == qid and not out.get("user_answer"):
+                        out["user_answer"] = answer
+                        if comment and not out.get("comment"):
+                            out["comment"] = comment
+                        out["autofill_source"] = autofill_source
+                        updated += 1
+                        return True
+                return False
+
+            if isinstance(execution_data, dict):
+                for s_id, step_data in execution_data.items():
+                    if step_id and str(s_id) != str(step_id):
+                        continue
+                    _apply(step_data.get("output", []))
+            for chat in chats:
+                if step_id and str(chat.get("step_id")) != str(step_id):
+                    continue
+                _apply(chat.get("output", []))
+            return updated
+
+        answered_now = 0
+        for q in [q for q in assigned_ques if q.get("id") not in answered_qids]:
+            qid = q.get("id")
+            try:
+                prompt = (
+                    "You are a STRICT QUESTION ANSWERING ENGINE for a vendor/cloud "
+                    "risk assessment. Use ONLY the CLOUD API DATA below. Do NOT guess. "
+                    "If the data does not support an answer, return null.\n\n"
+                    f"CLOUD API DATA (JSON):\n{context}\n\n"
+                    f"QUESTION ID: {qid}\n"
+                    f"Question: {q.get('question', '')}\n"
+                    f"Options: {json.dumps(q.get('options', {}), ensure_ascii=False)}\n\n"
+                    'Return ONLY JSON: {"id": "...", '
+                    '"user_answer": "<one of the options if options are provided, '
+                    'else a concise answer>" OR null, '
+                    '"summary": "<=40 word justification citing the data"}'
+                )
+                resp = await get_fireworks_response2(
+                    user_message=prompt,
+                    role="user",
+                    temp=0.0,
+                    user_id=self.userid,
+                    credits=self.credits,
+                )
+                parsed = _safe_json_load(resp)
+                if isinstance(parsed, list):
+                    parsed = parsed[0] if parsed else {}
+                answer = parsed.get("user_answer") if isinstance(parsed, dict) else None
+                summary = parsed.get("summary") if isinstance(parsed, dict) else None
+
+                if answer and str(answer).strip() not in ("", "null", "N/A", "None"):
+                    comment = (
+                        f"AI (cloud auto-fill): {str(summary).strip()}"
+                        if summary
+                        else "AI cloud auto-fill"
+                    )
+                    answered_now += persist(qid, str(answer).strip(), comment)
+            except Exception as e:
+                self.logger.error(
+                    "Cloud autofill question %s failed: %s", qid, e, exc_info=IS_DEV
+                )
+
+        self.previous_data = execution_data
+        self.chat_history = chats
+        self.saveworkflowtos3()
+        return {"status": "success", "answered_now": answered_now, "raw_ref": raw_ref}
+
     def answer_evidence_question(
         self, qid: str, user_answer, comment=None, evidence_url=None
     ):
