@@ -2258,6 +2258,133 @@ async def radar_change_block_confirm():
         )
 
 
+@radar_bp.route("/radar/deleteblock", methods=["POST"])
+@permission_required_body("radar.edit")
+async def radar_delete_block():
+    """Delete a top-level block (section) from a RADAR review or runbook result.
+
+    Body: { "userid", "review_id" | "result_id", "block_id" }. Mirrors the
+    record-resolution (incl. shared-access fallback) of /radar/changeblock/confirm,
+    then drops the block whose block_id matches and persists the trimmed report.
+    """
+    data = request.get_json(force=True)
+
+    user_id = data.get("userid")
+    review_id = data.get("review_id")
+    result_id = data.get("result_id")
+    block_id = data.get("block_id")
+
+    if not user_id or not block_id:
+        return jsonify({"error": "userid and block_id are required"}), 400
+
+    if not (review_id or result_id):
+        return (
+            jsonify({"error": "Either review_id or result_id must be provided"}),
+            400,
+        )
+
+    try:
+        logged_in_user_id, parsed_user_id = parse_composite_user_id(user_id)
+        if not parsed_user_id:
+            return jsonify({"error": "Unauthorized"}), 401
+
+        dbserver = LanceDBServer()
+
+        record = None
+        updated_json = None
+        owner_user_id = parsed_user_id
+        shared_access = False
+
+        if review_id:
+            record = await dbserver.radar_get_review(
+                user_id=parsed_user_id, review_id=review_id
+            )
+            if not record or not record.get("result"):
+                shared_reports = get_user_shared_reports(parsed_user_id)
+                shared_entry = None
+                for _, sdata in shared_reports.items():
+                    if (
+                        sdata.get("type") == "radar"
+                        and sdata.get("review_id") == review_id
+                    ):
+                        shared_entry = sdata
+                        break
+                if shared_entry:
+                    main_user_id = shared_entry.get("mainuser_id")
+                    record = await dbserver.radar_get_review(
+                        user_id=main_user_id, review_id=review_id
+                    )
+                    if record and record.get("result"):
+                        owner_user_id = main_user_id
+                        shared_access = True
+            if not record or not record.get("result"):
+                return jsonify({"error": "RADAR review not found"}), 404
+            updated_json = record["result"]
+
+        else:
+            record = await dbserver.runbook_get_result(
+                user_id=parsed_user_id, result_id=result_id
+            )
+            if not record or not record.get("result"):
+                shared_reports = get_user_shared_reports(parsed_user_id)
+                shared_entry = None
+                for _, sdata in shared_reports.items():
+                    if (
+                        sdata.get("type") == "runbook"
+                        and sdata.get("reportid") == result_id
+                    ):
+                        shared_entry = sdata
+                        break
+                if shared_entry:
+                    main_user_id = shared_entry.get("mainuser_id")
+                    record = await dbserver.runbook_get_result(
+                        user_id=main_user_id, result_id=result_id
+                    )
+                    if record and record.get("result"):
+                        owner_user_id = main_user_id
+                        shared_access = True
+            if not record or not record.get("result"):
+                return jsonify({"error": "Runbook review result not found"}), 404
+            updated_json = record["result"]
+
+        blocks = updated_json.get("blocks")
+        if not isinstance(blocks, list):
+            return jsonify({"error": "Report has no editable blocks"}), 404
+
+        remaining = [b for b in blocks if b.get("block_id") != block_id]
+        if len(remaining) == len(blocks):
+            return jsonify({"error": "Target block not found"}), 404
+
+        updated_json["blocks"] = remaining
+
+        if review_id:
+            await dbserver.radar_update_result(
+                user_id=owner_user_id, review_id=review_id, new_result=updated_json
+            )
+        else:
+            await dbserver.update_runbook_result(
+                user_id=owner_user_id, result_id=result_id, new_result=updated_json
+            )
+
+        return jsonify(
+            {
+                "status": "ok",
+                "message": "RADAR block deleted successfully",
+                "block_id": block_id,
+                "shared": shared_access,
+                "owner_user_id": owner_user_id,
+            }
+        )
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error("radar_delete_block error: %s\n%s", e, tb)
+        return (
+            jsonify({"error": "Failed to delete RADAR block", "details": str(e)}),
+            500,
+        )
+
+
 @radar_bp.route("/radar/knowledge/analyze", methods=["POST"])
 @permission_required_body("radar.edit")
 async def radar_knowledge_analyze():
