@@ -995,7 +995,8 @@ def azure_list_endpoints(app_id):
                 """
                 SELECT id, name, path, method, headers, query_params,
                        path_params, body_template, timeout_seconds, is_active,
-                       last_test_status, last_tested_at, created_at, updated_at
+                       last_test_status, last_tested_at, created_at, updated_at,
+                       schedules
                 FROM azure_external_app_endpoints
                 WHERE app_id=%s AND is_active=1
                 ORDER BY created_at ASC
@@ -1013,6 +1014,7 @@ def azure_list_endpoints(app_id):
                 "query_params",
                 "path_params",
                 "body_template",
+                "schedules",
             ):
                 if ep.get(json_field):
                     try:
