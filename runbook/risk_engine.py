@@ -148,16 +148,29 @@ def _clamp(value, low, high):
     return max(low, min(high, n))
 
 
-def finding_id_for(risk):
-    """Deterministic, content-derived id for a single risk finding.
+def _normalize_risk_id(raw):
+    """Normalize an LLM-supplied risk_id to a short, stable slug, or '' if unusable."""
+    slug = "".join(
+        ch if (ch.isalnum() or ch in "-_") else "-"
+        for ch in str(raw or "").strip().lower()
+    ).strip("-")
+    return slug[:48]
 
-    The LLM risk schema carries no stable identifier, so we hash the normalized
-    threat + vulnerability text. Identical finding content yields the same id across
-    runs, giving a match key that survives reordering (but not LLM rewording — that
-    case is surfaced as a dropped override rather than silently lost).
+
+def finding_id_for(risk):
+    """Stable identifier for a single risk finding, used to re-apply manual overrides.
+
+    Prefers the LLM-supplied ``risk_id`` (which the prompt instructs the model to carry
+    forward verbatim for the same risk across re-runs — making the key reword-proof).
+    Falls back to a content hash of the normalized threat + vulnerability text when no
+    ``risk_id`` is present (older reports, or a model that omitted it); that fallback is
+    stable across reordering but not rewording.
     """
     if not isinstance(risk, dict):
         return ""
+    rid = _normalize_risk_id(risk.get("risk_id"))
+    if rid:
+        return rid
     threat = str(risk.get("threat") or "").strip().lower()
     vuln = str(risk.get("vulnerability") or "").strip().lower()
     # Non-cryptographic: just a stable content fingerprint for matching findings.
@@ -165,6 +178,27 @@ def finding_id_for(risk):
         f"{threat}||{vuln}".encode("utf-8"), usedforsecurity=False
     ).hexdigest()
     return digest[:12]
+
+
+def prior_risks_for_prompt(prior_risk_analysis, limit=40):
+    """Compact list of prior risks for prompt injection so the LLM can reuse risk_ids.
+
+    Returns ``[{"risk_id", "threat", "vulnerability"}, ...]`` from the previous report's
+    risk set. Feeding this into the risk prompt lets the model keep the same ``risk_id``
+    for a risk it rewords on a re-run, which is what makes manual overrides reword-proof.
+    """
+    if not isinstance(prior_risk_analysis, dict):
+        return []
+    out = []
+    for risk in (prior_risk_analysis.get("risks") or [])[:limit]:
+        if not isinstance(risk, dict):
+            continue
+        out.append({
+            "risk_id": risk.get("finding_id") or finding_id_for(risk),
+            "threat": risk.get("threat", ""),
+            "vulnerability": risk.get("vulnerability", ""),
+        })
+    return out
 
 
 def _level_for_score(score, bands):

@@ -45,6 +45,56 @@ def test_compute_risk_stamps_stable_finding_id(risk_engine):
     assert a["rev"] == 0  # fresh analysis starts at rev 0
 
 
+@pytest.mark.unit
+def test_llm_risk_id_is_used_as_finding_id_and_survives_rewording(risk_engine):
+    # The LLM supplies a stable risk_id; finding_id should be that slug, not a
+    # content hash — so it stays identical even when threat/vulnerability is reworded.
+    v1 = risk_engine.compute_risk([
+        {"risk_id": "Data-Exfiltration Logs", "threat": "Exfil",
+         "vulnerability": "logs leak", "impact": 5, "likelihood": 5},
+    ])
+    v2 = risk_engine.compute_risk([
+        {"risk_id": "Data-Exfiltration Logs", "threat": "Completely reworded threat",
+         "vulnerability": "now described differently", "impact": 3, "likelihood": 2},
+    ])
+    assert v1["risks"][0]["finding_id"] == "data-exfiltration-logs"
+    assert v1["risks"][0]["finding_id"] == v2["risks"][0]["finding_id"]
+
+
+@pytest.mark.unit
+def test_risk_id_makes_override_reword_proof(risk_engine):
+    prior = risk_engine.compute_risk([
+        {"risk_id": "weak-mfa", "threat": "Weak MFA",
+         "vulnerability": "no second factor", "impact": 4, "likelihood": 4},
+    ])
+    prior["risks"][0]["overridden"] = True
+    prior["risks"][0]["risk_score"] = 99
+    prior["risks"][0]["risk_level"] = "Critical"
+
+    # Re-run reworded the finding but kept the same risk_id (as instructed).
+    reworded = risk_engine.compute_risk([
+        {"risk_id": "weak-mfa", "threat": "Authentication weakness",
+         "vulnerability": "MFA not enforced org-wide", "impact": 2, "likelihood": 2},
+    ])
+    out, dropped = risk_engine.apply_risk_overrides(reworded, prior)
+    assert dropped == []  # NOT dropped — id matched despite rewording
+    assert out["risks"][0]["risk_score"] == 99
+    assert out["risks"][0]["overridden"] is True
+
+
+@pytest.mark.unit
+def test_prior_risks_for_prompt_shape(risk_engine):
+    prior = risk_engine.compute_risk([
+        {"risk_id": "weak-mfa", "threat": "Weak MFA",
+         "vulnerability": "no second factor", "impact": 4, "likelihood": 4},
+    ])
+    out = risk_engine.prior_risks_for_prompt(prior)
+    assert out == [{"risk_id": "weak-mfa", "threat": "Weak MFA",
+                    "vulnerability": "no second factor"}]
+    assert risk_engine.prior_risks_for_prompt(None) == []
+    assert risk_engine.prior_risks_for_prompt({}) == []
+
+
 # ── report-level override preservation ─────────────────────────────────────────
 
 @pytest.mark.unit

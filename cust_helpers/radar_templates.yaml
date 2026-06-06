@@ -2720,12 +2720,26 @@ nist_risk_score_prompt: |
   OPTIONAL REPORT DATA (may contain extracted risk analysis or raw report content):
   {{report_data}}
 
+  OPTIONAL PREVIOUS RISKS (from the prior version of this report — for id continuity only):
+  {{prior_risks}}
+
   --------------------------------------------------
   OBJECTIVE:
   Identify the cybersecurity risks and, for EACH risk, assign an Impact and a Likelihood
   rating. You do NOT compute any numeric risk score or overall score — a downstream system
   multiplies Impact × Likelihood and aggregates them deterministically. Your job is only to
   produce the risk set with accurate Impact and Likelihood ratings plus a justification.
+
+  --------------------------------------------------
+  STABLE RISK IDS (REQUIRED for override continuity):
+
+  - Every risk MUST include a "risk_id": a short, stable kebab-case slug derived from the
+    core threat (e.g. "data-exfiltration-logs", "weak-mfa", "missing-siem-rules").
+  - If PREVIOUS RISKS are provided, you MUST REUSE the exact "risk_id" of any previous risk
+    that represents the SAME underlying threat/vulnerability — EVEN IF you reword its
+    threat or vulnerability text or change its ratings. Matching is by meaning, not wording.
+  - Only mint a NEW risk_id for a genuinely new risk that has no counterpart in PREVIOUS RISKS.
+  - Keep every risk_id unique within your output.
 
   --------------------------------------------------
   SCORING SCALE (set by the organization's configuration):
@@ -2785,6 +2799,7 @@ nist_risk_score_prompt: |
 
   - MUST include at least 6 risks
   - MUST NOT return empty risks
+  - Each risk MUST include a stable "risk_id" (see STABLE RISK IDS above)
   - Impact and Likelihood MUST be integers within their configured ranges
   - DO NOT include any risk_score, final_risk_score or risk_level fields — those are computed downstream
   - MUST reflect realistic enterprise scenarios
@@ -2801,6 +2816,7 @@ nist_risk_score_prompt: |
   {
     "risks": [
       {
+        "risk_id": "stable-kebab-case-slug",
         "threat": "...",
         "vulnerability": "...",
         "likelihood": 4,

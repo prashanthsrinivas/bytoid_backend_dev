@@ -31,6 +31,7 @@ from .risk_engine import (
     get_risk_config,
     compute_risk,
     apply_risk_overrides,
+    prior_risks_for_prompt,
     risk_analysis_disabled,
 )
 from runbook.helper import run_evidence_analysis, reduce_data_for_report
@@ -1010,12 +1011,17 @@ async def modify_run_runbook_execution_engine(
             structure_file_content = newdata_risk
 
         risk_cfg = get_risk_config(user_id)
+        _prior_ra = (last_runbook_response or {}).get("risk_analysis")
         risk_prompt = (
             RADAR_TEMPLATE["nist_risk_score_prompt"]
             .replace("{{analysis_result}}", json.dumps(merged_result))
             .replace(
                 "{{report_data}}",
                 json.dumps(structure_file_content) if structure_file_content else "",
+            )
+            .replace(
+                "{{prior_risks}}",
+                json.dumps(prior_risks_for_prompt(_prior_ra)) if _prior_ra else "",
             )
             .replace("{{impact_scale}}", str(risk_cfg.get("impact_scale", 5)))
             .replace("{{likelihood_scale}}", str(risk_cfg.get("likelihood_scale", 5)))
@@ -1037,8 +1043,7 @@ async def modify_run_runbook_execution_engine(
         # Re-apply manual risk overrides from the prior report (loaded into
         # last_runbook_response via is_prev_needed) so user edits survive chat-modify.
         try:
-            prior_ra = (last_runbook_response or {}).get("risk_analysis")
-            computed, dropped = apply_risk_overrides(computed, prior_ra)
+            computed, dropped = apply_risk_overrides(computed, _prior_ra)
             if dropped:
                 computed["dropped_overrides"] = dropped
                 logger.info(

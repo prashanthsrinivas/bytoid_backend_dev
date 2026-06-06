@@ -3945,8 +3945,8 @@ class LanceDBServer:
         if not existing:
             return
 
-        await asyncio.to_thread(lambda: table.delete(f'result_id == "{result_id}"'))
-
+        # Build the replacement row BEFORE deleting, so we never delete without a
+        # ready replacement and the delete+add gap is as small as possible.
         # Only replace the result field; all other columns stay exactly as stored.
         updated_row = dict(existing)
         updated_row["result"] = self._enc(user_id, json.dumps(new_result))
@@ -3959,7 +3959,28 @@ class LanceDBServer:
             except (TypeError, ValueError):
                 pass
 
-        await asyncio.to_thread(lambda: table.add([updated_row]))
+        # LanceDB offers no transaction spanning delete+add. Guard the gap: if the
+        # re-insert raises, restore the original row so a transient add failure
+        # can't leave the report deleted. (A hard process crash between the two is
+        # the only remaining loss window and is inherent to the append-only store.)
+        await asyncio.to_thread(lambda: table.delete(f'result_id == "{result_id}"'))
+        try:
+            await asyncio.to_thread(lambda: table.add([updated_row]))
+        except Exception:
+            try:
+                await asyncio.to_thread(lambda: table.add([existing]))
+                logger.error(
+                    "update_runbook_result: re-insert failed for %s; restored "
+                    "the original row",
+                    result_id,
+                )
+            except Exception:
+                logger.error(
+                    "update_runbook_result: re-insert AND rollback failed for %s; "
+                    "row may be lost",
+                    result_id,
+                )
+            raise
 
     async def update_runbook_schedule(self, user_id, runbook_id, schedule):
         table = await self._open_or_create_runbook_table(user_id)

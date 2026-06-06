@@ -51,6 +51,7 @@ from .risk_engine import (
     get_risk_config,
     compute_risk,
     apply_risk_overrides,
+    prior_risks_for_prompt,
     risk_analysis_disabled,
 )
 from utils.scheduler import scheduler
@@ -1513,6 +1514,23 @@ async def run_runbook_execution_engine(
 
             # Per-org configurable scales (default Impact/Likelihood out of 5).
             risk_cfg = get_risk_config(user_id)
+
+            # Load the prior report once: its risks (with stable risk_ids) seed the
+            # prompt so the LLM reuses ids for reworded findings, and its overrides
+            # are re-applied after scoring so manual edits survive the re-run.
+            prior_ra = None
+            try:
+                prior = await dbserver.get_latest_runbook_result(
+                    user_id=user_id, runbook_id=runbook_id, result_id=result_id
+                )
+                if prior:
+                    prior_result = prior.get("result")
+                    if isinstance(prior_result, str):
+                        prior_result = _safe_json_parse(prior_result) or {}
+                    prior_ra = (prior_result or {}).get("risk_analysis")
+            except Exception:
+                logger.warning("prior risk lookup (re-run) failed", exc_info=IS_DEV)
+
             risk_prompt = (
                 RADAR_TEMPLATE["nist_risk_score_prompt"]
                 .replace("{{analysis_result}}", json.dumps(merged_result))
@@ -1521,6 +1539,10 @@ async def run_runbook_execution_engine(
                     json.dumps(structure_file_content)
                     if structure_file_content
                     else "",
+                )
+                .replace(
+                    "{{prior_risks}}",
+                    json.dumps(prior_risks_for_prompt(prior_ra)) if prior_ra else "",
                 )
                 .replace("{{impact_scale}}", str(risk_cfg.get("impact_scale", 5)))
                 .replace(
@@ -1555,19 +1577,10 @@ async def run_runbook_execution_engine(
             computed = compute_risk(risk_data.get("risks", []), risk_cfg)
             computed["justification"] = risk_data.get("justification", "")
 
-            # Re-apply any manual risk overrides from the prior report so user edits
-            # survive a re-run. Anchor to the exact source report when result_id was
-            # threaded through; otherwise fall back to the runbook's latest result.
+            # Re-apply any manual risk overrides from the prior report (loaded above)
+            # so user edits survive a re-run. Matching is by the stable risk_id the
+            # LLM was asked to carry forward.
             try:
-                prior = await dbserver.get_latest_runbook_result(
-                    user_id=user_id, runbook_id=runbook_id, result_id=result_id
-                )
-                prior_ra = None
-                if prior:
-                    prior_result = prior.get("result")
-                    if isinstance(prior_result, str):
-                        prior_result = _safe_json_parse(prior_result) or {}
-                    prior_ra = (prior_result or {}).get("risk_analysis")
                 computed, dropped = apply_risk_overrides(computed, prior_ra)
                 if dropped:
                     computed["dropped_overrides"] = dropped
