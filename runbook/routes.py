@@ -2436,6 +2436,7 @@ def patch_risk_analysis(result_id):
         from runbook.risk_engine import (
             get_risk_config,
             compute_risk,
+            finding_id_for,
             _level_for_score,
         )
 
@@ -2544,17 +2545,31 @@ def patch_risk_analysis(result_id):
             findings = data.get("findings")
             if isinstance(findings, list):
                 risks = ra.get("risks") or []
-                by_id = {r.get("finding_id"): r for r in risks if isinstance(r, dict)}
+                # Only key by finding_id when it's truthy. Legacy reports (generated
+                # before finding_id existed) have None for every finding, which would
+                # otherwise collapse the map to a single {None: <last risk>} entry and
+                # send every edit to the last finding. Falling back to index keeps
+                # per-finding edits correct for those reports.
+                by_id = {
+                    r["finding_id"]: r
+                    for r in risks
+                    if isinstance(r, dict) and r.get("finding_id")
+                }
                 finding_changes = []
                 for f in findings:
                     if not isinstance(f, dict):
                         continue
-                    target = by_id.get(f.get("finding_id"))
+                    requested_id = f.get("finding_id")
+                    target = by_id.get(requested_id) if requested_id else None
                     idx = f.get("index")
                     if target is None and isinstance(idx, int) and 0 <= idx < len(risks):
                         target = risks[idx]
                     if target is None:
                         continue
+                    # Stamp a stable id on legacy findings so this override (and future
+                    # ones) can be matched and survive regeneration.
+                    if not target.get("finding_id"):
+                        target["finding_id"] = finding_id_for(target)
                     fid = target.get("finding_id")
                     if f.get("clear"):
                         one = _recompute([target])
