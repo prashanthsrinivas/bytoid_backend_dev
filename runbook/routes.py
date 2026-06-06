@@ -2527,6 +2527,10 @@ def patch_risk_analysis(result_id):
                         if not (0 <= s <= max_score):
                             return jsonify({"error": f"score must be 0..{max_score}"}), 400
                         ra["final_risk_score"] = s
+                    # Score-driven: when only a score is supplied, derive the level
+                    # from its band so the label always matches the score.
+                    if lvl is None and score is not None:
+                        ra["risk_level"] = _level_for_score(ra["final_risk_score"], bands)
                     ra["risk_overridden"] = True
                     # Flag (but allow) a label that doesn't fall in its score's band.
                     if (lvl is not None and score is not None
@@ -2562,6 +2566,7 @@ def patch_risk_analysis(result_id):
                         continue
                     old = {k: target.get(k) for k in ("impact", "likelihood",
                                                       "risk_score", "risk_level")}
+                    il_changed = False
                     for key in ("impact", "likelihood"):
                         if key in f and f[key] is not None:
                             scale = impact_scale if key == "impact" else likelihood_scale
@@ -2572,7 +2577,9 @@ def patch_risk_analysis(result_id):
                             if not (1 <= val <= scale):
                                 return jsonify({"error": f"{key} must be 1..{scale}"}), 400
                             target[key] = val
-                    if f.get("risk_score") is not None:
+                            il_changed = True
+                    explicit_score = f.get("risk_score") is not None
+                    if explicit_score:
                         try:
                             sc = float(f["risk_score"])
                         except (TypeError, ValueError):
@@ -2580,12 +2587,20 @@ def patch_risk_analysis(result_id):
                         if not (0 <= sc <= max_score):
                             return jsonify({"error": f"risk_score must be 0..{max_score}"}), 400
                         target["risk_score"] = sc
-                    if f.get("risk_level") is not None:
+                    elif il_changed:
+                        # A finding is scored from likelihood × impact — re-derive the
+                        # score so it stays consistent with the edited inputs.
+                        target["risk_score"] = int(target.get("impact") or 1) * int(target.get("likelihood") or 1)
+                    explicit_level = f.get("risk_level") is not None
+                    if explicit_level:
                         if band_labels and f["risk_level"] not in band_labels:
                             return jsonify({"error": f"Unknown risk level '{f['risk_level']}'"}), 400
                         target["risk_level"] = f["risk_level"]
+                    elif il_changed or explicit_score:
+                        # Level follows the (new) score's band when not explicitly set.
+                        target["risk_level"] = _level_for_score(target.get("risk_score") or 0, bands)
                     target["overridden"] = True
-                    if (f.get("risk_level") is not None and target.get("risk_score") is not None
+                    if (explicit_level and target.get("risk_score") is not None
                             and _level_for_score(target["risk_score"], bands) != f["risk_level"]):
                         mismatch = True
                     finding_changes.append({"finding_id": fid, "old": old,
@@ -2594,6 +2609,17 @@ def patch_risk_analysis(result_id):
                                                      "risk_score", "risk_level")}})
                 if finding_changes:
                     changes["findings"] = finding_changes
+                    # Re-aggregate the overall risk from the (edited) findings unless
+                    # the user has manually pinned the overall risk. Keeps the report
+                    # header in step with the Risk Analysis section's findings.
+                    if not ra.get("risk_overridden"):
+                        scores = [r.get("risk_score") for r in (ra.get("risks") or [])
+                                  if isinstance(r, dict) and r.get("risk_score") is not None]
+                        if scores:
+                            aggregation = (cfg.get("aggregation") or "average").lower()
+                            final = max(scores) if aggregation == "max" else round(sum(scores) / len(scores), 1)
+                            ra["final_risk_score"] = final
+                            ra["risk_level"] = _level_for_score(final, bands)
 
         if not changes:
             return jsonify({"error": "No risk changes supplied"}), 400
