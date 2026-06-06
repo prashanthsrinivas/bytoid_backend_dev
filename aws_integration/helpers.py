@@ -308,6 +308,7 @@ async def save_aws_run_to_s3(
             result=result,
             trigger=trigger,
             minute_bucket=minute_bucket,
+            provider="aws",
         )
 
     return val

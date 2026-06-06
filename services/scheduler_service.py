@@ -794,3 +794,128 @@ class GCPAPIConnectorScheduler:
             )
             task_ids.append(task.id)
         return {"scheduled_runs": len(task_ids), "task_ids": task_ids}
+
+
+# =========================================================
+# AWSAPIConnectorScheduler
+# Mirrors GCP/AzureAPIConnectorScheduler but targets AWS endpoints,
+# dispatching to tasks.schedule_aws_app_endpoint /
+# tasks.run_aws_endpoint_interval so scheduled jobs execute against
+# aws_external_app_endpoints (via _execute_aws_endpoint_internal),
+# not the generic external_app_endpoints table.
+#
+# NOTE: the interval stop_key uses the "aws_endpoint:" prefix so it
+# matches the execution_key already written by aws_schedule_endpoint
+# (f"aws_endpoint:{endpoint_id}:{user_id}:{schedule_type}"); the stop
+# route disables that exact key.
+# =========================================================
+class AWSAPIConnectorScheduler:
+    redis_service = get_redis()
+
+    @staticmethod
+    def to_utc(dt: datetime, timezone: str):
+        tz = pytz.timezone(timezone)
+        return tz.localize(dt).astimezone(pytz.UTC)
+
+    @staticmethod
+    def local_time_to_utc_hour_min(hour, minute, timezone):
+        local_dt = datetime.combine(date.today(), time(hour, minute))
+        utc_dt = AWSAPIConnectorScheduler.to_utc(local_dt, timezone)
+        return utc_dt.hour, utc_dt.minute
+
+    @staticmethod
+    def revoke_task(task_id):
+        celery.control.revoke(task_id, terminate=True)
+        celery.backend.forget(task_id)
+
+    @staticmethod
+    def disable_celery_entry(entry_name):
+        celery.conf.beat_schedule.pop(entry_name, None)
+
+    @staticmethod
+    async def is_schedule_disabled(stop_key: str):
+        status = await AWSAPIConnectorScheduler.redis_service.get(stop_key)
+        return status == "disabled"
+
+    @staticmethod
+    async def make_schedule_disabled(stop_key: str):
+        status = await AWSAPIConnectorScheduler.redis_service.set(
+            key=stop_key, value="disabled"
+        )
+        return status == "disabled"
+
+    @staticmethod
+    async def schedule_endpoint_once(userid, endpoint_id, run_at, timezone):
+        dt_utc = AWSAPIConnectorScheduler.to_utc(run_at, timezone)
+        task = celery.send_task(
+            "tasks.schedule_aws_app_endpoint",
+            args=[userid, endpoint_id],
+            eta=dt_utc,
+        )
+        return {"task_id": task.id, "run_at_utc": dt_utc.isoformat()}
+
+    @staticmethod
+    async def schedule_endpoint_daily(userid, endpoint_id, hour, minute, timezone):
+        key = f"aws_endpoint_daily_{userid}_{endpoint_id}"
+        utc_hour, utc_minute = AWSAPIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_aws_app_endpoint",
+            "schedule": crontab(hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_endpoint_weekly(
+        userid, endpoint_id, weekday, hour, minute, timezone
+    ):
+        key = f"aws_endpoint_weekly_{userid}_{endpoint_id}_{weekday}"
+        utc_hour, utc_minute = AWSAPIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_aws_app_endpoint",
+            "schedule": crontab(weekday=weekday, hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_endpoint_monthly(
+        userid, endpoint_id, day, hour, minute, timezone
+    ):
+        key = f"aws_endpoint_monthly_{userid}_{endpoint_id}_{day}"
+        utc_hour, utc_minute = AWSAPIConnectorScheduler.local_time_to_utc_hour_min(
+            hour, minute, timezone
+        )
+        celery.conf.beat_schedule[key] = {
+            "task": "tasks.schedule_aws_app_endpoint",
+            "schedule": crontab(day_of_month=day, hour=utc_hour, minute=utc_minute),
+            "args": (userid, endpoint_id),
+        }
+        return {"entry_name": key}
+
+    @staticmethod
+    async def schedule_endpoint_interval(userid, endpoint_id, interval_seconds):
+        stop_key = f"aws_endpoint:{endpoint_id}:{userid}:interval"
+        task = celery.send_task(
+            "tasks.run_aws_endpoint_interval",
+            args=[userid, endpoint_id, interval_seconds, stop_key],
+        )
+        return {"task_id": task.id, "stop_key": stop_key}
+
+    @staticmethod
+    async def schedule_endpoint_custom_dates(userid, endpoint_id, datetimes, timezone):
+        task_ids = []
+        for dt_str in datetimes:
+            dt = datetime.fromisoformat(dt_str)
+            dt_utc = AWSAPIConnectorScheduler.to_utc(dt, timezone)
+            task = celery.send_task(
+                "tasks.schedule_aws_app_endpoint",
+                args=[userid, endpoint_id],
+                eta=dt_utc,
+            )
+            task_ids.append(task.id)
+        return {"scheduled_runs": len(task_ids), "task_ids": task_ids}

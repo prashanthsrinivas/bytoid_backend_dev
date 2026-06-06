@@ -165,6 +165,7 @@ async def save_gcp_run_to_s3(
             result=result,
             trigger=trigger,
             minute_bucket=minute_bucket,
+            provider="gcp",
         )
 
     return val

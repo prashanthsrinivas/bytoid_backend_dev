@@ -279,11 +279,123 @@ async def get_playbook_instruction(user_id, filename):
     return instruction_data
 
 
+# =====================================================================
+# Connector data resolution (generic + AWS / Azure / GCP)
+# ---------------------------------------------------------------------
+# Resolves a selected API-connector endpoint into the data fed to the
+# runbook/report "responses" (blocks) and "evidence" sections.
+#
+# Strategy: prefer the LATEST SCHEDULED RUN cached in S3 under the
+# provider-specific prefix, decrypted with that provider's per-user KMS
+# helper. If no cached run exists, fall back to a live fetch via the
+# provider's internal executor.
+#
+# Runs are stored under, and encrypted for, the CONNECTOR OWNER's
+# user_id (the admin who created/scheduled it) — not necessarily the
+# runbook owner — so we look the owner up from the endpoint table and
+# use it for both the S3 prefix and decryption.
+# =====================================================================
+_CONNECTOR_PROVIDERS = {
+    "custom": {"table": "external_app_endpoints", "s3_prefix": "apiconnectors"},
+    "aws": {"table": "aws_external_app_endpoints", "s3_prefix": "aws_connector"},
+    "azure": {"table": "azure_external_app_endpoints", "s3_prefix": "azure_connector"},
+    "gcp": {"table": "gcp_external_app_endpoints", "s3_prefix": "gcp_connector"},
+}
+
+
+def _connector_endpoint_owner(conn, provider, endpoint_id):
+    """Return {'user_id', 'app_id'} for a connector endpoint, or None."""
+    import pymysql
+
+    cfg = _CONNECTOR_PROVIDERS.get(provider)
+    if not cfg:
+        return None
+    # table name comes from the fixed _CONNECTOR_PROVIDERS map, not user input
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            f"SELECT user_id, app_id FROM {cfg['table']} WHERE id=%s",
+            (endpoint_id,),
+        )
+        return cur.fetchone()
+
+
+def _connector_decrypt(provider, user_id, val):
+    if provider == "aws":
+        from aws_integration.helpers import _dec_run
+    elif provider == "azure":
+        from azure_integration.helpers import _dec_run
+    elif provider == "gcp":
+        from gcp_integration.helpers import _dec_run
+    else:
+        from apiConnector.helpers import _dec_run
+    return _dec_run(user_id, val)
+
+
+async def _connector_live_execute(provider, endpoint_id, user_id):
+    if provider == "aws":
+        from aws_integration.helpers import _execute_aws_endpoint_internal as _fn
+    elif provider == "azure":
+        from azure_integration.helpers import _execute_azure_endpoint_internal as _fn
+    elif provider == "gcp":
+        from gcp_integration.helpers import _execute_gcp_endpoint_internal as _fn
+    else:
+        from apiConnector.helpers import _execute_endpoint_internal as _fn
+    return await _fn(endpoint_id, user_id)
+
+
+async def resolve_connector_endpoint_data(
+    conn, provider, endpoint_id, app_id=None, max_chars=8000
+):
+    """Resolve one connector endpoint to (data_str, source).
+
+    source is 'scheduled' (latest cached run) or 'live' (fresh fetch fallback).
+    Raises ValueError if the endpoint can't be found.
+    """
+    from utils.s3_utils import get_filedata_endp, getallendpointdetails
+
+    provider = (provider or "custom").lower()
+    cfg = _CONNECTOR_PROVIDERS.get(provider)
+    if not cfg:
+        raise ValueError(f"Unknown connector provider: {provider}")
+
+    owner = _connector_endpoint_owner(conn, provider, endpoint_id)
+    if not owner:
+        raise ValueError(f"{provider} endpoint {endpoint_id} not found")
+    owner_user_id = owner["user_id"]
+    app_id = app_id or owner["app_id"]
+
+    # 1. Latest scheduled run from the provider-prefixed S3 path
+    prefix = f"{owner_user_id}/{cfg['s3_prefix']}/{app_id}/{endpoint_id}/"
+    try:
+        files = getallendpointdetails(prefix)  # newest first
+    except Exception as e:
+        logger.warning(
+            "Connector run listing failed (%s ep=%s): %s", provider, endpoint_id, e
+        )
+        files = []
+
+    if files:
+        record = get_filedata_endp(prefix + files[0]["file"])
+        # each S3 object is a list of appended run records; newest is last
+        if isinstance(record, list):
+            record = record[-1] if record else {}
+        resp = record.get("response") if isinstance(record, dict) else record
+        resp = _connector_decrypt(provider, owner_user_id, resp)
+        # execute() result is {success, status_code, response}; prefer payload
+        if isinstance(resp, dict) and "response" in resp:
+            resp = resp["response"]
+        return str(resp)[:max_chars], "scheduled"
+
+    # 2. Fallback: live fetch via the provider executor (owner context)
+    result = await _connector_live_execute(provider, endpoint_id, owner_user_id)
+    resp = result.get("response") if isinstance(result, dict) else result
+    return str(resp)[:max_chars], "live"
+
+
 async def retreval_from_sources(
     conn, dbserver, main_source, filesources, userid, payload
 ):
     from umail.routes import get_sorted_lance_emails
-    from apiConnector.helpers import _execute_endpoint_internal
 
     logger.debug("Sources — main: %s  files: %s", main_source, filesources)
     filesources = normalize_json_field(filesources)
@@ -291,27 +403,39 @@ async def retreval_from_sources(
     data_for_review = []
     extracted_text_len = 0
     # -------------------------
-    # APP SOURCE
+    # APP SOURCE  (generic + AWS / Azure / GCP connectors)
     # -------------------------
     if main_source == "app" and filesources:
-        endpoint_ids = filesources.get("endpoint_ids", [])
+        # Enriched shape: apps=[{provider, app_id, endpoint_id}]
+        app_entries = list(filesources.get("apps") or [])
+        # Legacy shape: endpoint_ids=[...] → generic ("custom") connectors
+        for eid in filesources.get("endpoint_ids", []):
+            app_entries.append({"provider": "custom", "endpoint_id": eid})
 
-        for endpoint_id in endpoint_ids:
+        for entry in app_entries:
+            provider = (entry.get("provider") or "custom").lower()
+            endpoint_id = entry.get("endpoint_id")
+            app_id = entry.get("app_id")
+            if endpoint_id is None:
+                continue
             try:
-                result = await _execute_endpoint_internal(
-                    endpoint_id=endpoint_id,
-                    userid=userid,
+                data_str, run_source = await resolve_connector_endpoint_data(
+                    conn, provider, endpoint_id, app_id
                 )
-                extracted_text_len += len(result.get("response"))
+                extracted_text_len += len(data_str)
                 data_for_review.append(
                     {
                         "type": "app",
+                        "provider": provider,
                         "endpoint_id": endpoint_id,
-                        "data": str(result.get("response")),
+                        "run_source": run_source,
+                        "data": data_str,
                     }
                 )
             except Exception as e:
-                data_for_review.append({"endpoint_id": endpoint_id, "error": str(e)})
+                data_for_review.append(
+                    {"endpoint_id": endpoint_id, "provider": provider, "error": str(e)}
+                )
 
     # -------------------------
     # NOTES SOURCE

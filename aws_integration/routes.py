@@ -33,7 +33,7 @@ from services.audit_log_service import (
     AWS_SAML_DISCONNECTED,
     log_audit_event,
 )
-from services.scheduler_service import APIConnectorScheduler
+from services.scheduler_service import AWSAPIConnectorScheduler
 from utils.app_configs import ACCESSIBLE_IDS, ALLOWED_ORIGINS
 from utils.s3_utils import get_filedata_endp, getallendpointdetails
 
@@ -1274,42 +1274,42 @@ def aws_schedule_endpoint(endpoint_id):
             celery_task_ids = existing.get("celery_task_ids", [])
 
             if celery_type == "task" and celery_id:
-                APIConnectorScheduler.revoke_task(celery_id)
+                AWSAPIConnectorScheduler.revoke_task(celery_id)
             elif celery_type == "beat" and celery_entry:
-                APIConnectorScheduler.disable_celery_entry(celery_entry)
+                AWSAPIConnectorScheduler.disable_celery_entry(celery_entry)
             elif celery_type == "tasks" and celery_task_ids:
                 for tid in celery_task_ids:
-                    APIConnectorScheduler.revoke_task(tid)
+                    AWSAPIConnectorScheduler.revoke_task(tid)
             elif celery_id:
-                APIConnectorScheduler.revoke_task(celery_id)
+                AWSAPIConnectorScheduler.revoke_task(celery_id)
 
         if schedule_type == "one_time":
             dt = datetime.fromisoformat(data["datetime"])
             result = asyncio.run(
-                APIConnectorScheduler.schedule_endpoint_once(user_id, endpoint_id, dt, timezone)
+                AWSAPIConnectorScheduler.schedule_endpoint_once(user_id, endpoint_id, dt, timezone)
             )
         elif schedule_type == "daily":
             hour, minute = map(int, data["startTime"].split(":"))
             result = asyncio.run(
-                APIConnectorScheduler.schedule_endpoint_daily(user_id, endpoint_id, hour, minute, timezone)
+                AWSAPIConnectorScheduler.schedule_endpoint_daily(user_id, endpoint_id, hour, minute, timezone)
             )
         elif schedule_type == "weekly":
             hour, minute = map(int, data["startTime"].split(":"))
             result = asyncio.run(
-                APIConnectorScheduler.schedule_endpoint_weekly(
+                AWSAPIConnectorScheduler.schedule_endpoint_weekly(
                     user_id, endpoint_id, data["weekday"], hour, minute, timezone
                 )
             )
         elif schedule_type == "monthly":
             hour, minute = map(int, data["startTime"].split(":"))
             result = asyncio.run(
-                APIConnectorScheduler.schedule_endpoint_monthly(
+                AWSAPIConnectorScheduler.schedule_endpoint_monthly(
                     user_id, endpoint_id, data["day"], hour, minute, timezone
                 )
             )
         elif schedule_type == "interval":
             result = asyncio.run(
-                APIConnectorScheduler.schedule_endpoint_interval(user_id, endpoint_id, data["seconds"])
+                AWSAPIConnectorScheduler.schedule_endpoint_interval(user_id, endpoint_id, data["seconds"])
             )
         elif schedule_type == "custom":
             dates = expand_custom_dates(
@@ -1318,7 +1318,7 @@ def aws_schedule_endpoint(endpoint_id):
                 start_time=data["startTime"],
             )
             result = asyncio.run(
-                APIConnectorScheduler.schedule_endpoint_custom_dates(user_id, endpoint_id, dates, timezone)
+                AWSAPIConnectorScheduler.schedule_endpoint_custom_dates(user_id, endpoint_id, dates, timezone)
             )
         else:
             return jsonify({"error": "Unsupported schedule type"}), 400
@@ -1347,6 +1347,59 @@ def aws_schedule_endpoint(endpoint_id):
 
         _save_aws_endpoint_schedule(endpoint_id, schedule_record)
         return jsonify({"success": True, "schedule": schedule_record})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@aws_integration_bp.route(
+    "/connector/endpoints/<int:endpoint_id>/schedules/stop", methods=["POST"]
+)
+def aws_stop_schedule(endpoint_id):
+    """Stop the schedule for an AWS connector endpoint.
+
+    Body JSON: { "user_id": ..., "execution_key": "aws_endpoint:<id>:<user>:interval" }
+    Mirrors apiConnector.stop_schedule but targets aws_external_app_endpoints
+    and AWSAPIConnectorScheduler.
+    """
+    try:
+        body = request.get_json(force=True) or {}
+        user_id = body.get("user_id") or _extract_user_id()
+
+        ok, err = _admin_only_check(user_id)
+        if not ok:
+            return err
+
+        execution_key = body.get("execution_key")
+        if not execution_key:
+            return jsonify({"success": False, "error": "execution_key missing"}), 400
+
+        existing = _get_aws_schedule_endpointdetails(endpoint_id)
+        if existing is None:
+            return jsonify({"success": False, "error": "Endpoint not found"}), 404
+
+        # schedules may be stored as a single dict or a list
+        schedules = [existing] if isinstance(existing, dict) else existing
+
+        for sch in schedules:
+            if sch.get("execution_key") == execution_key:
+                sch["status"] = "inactive"
+                if sch.get("celery_entry"):
+                    AWSAPIConnectorScheduler.disable_celery_entry(sch["celery_entry"])
+                if sch.get("celery_task_id"):
+                    AWSAPIConnectorScheduler.revoke_task(sch["celery_task_id"])
+                if sch.get("celery_task_ids"):
+                    for tid in sch["celery_task_ids"]:
+                        AWSAPIConnectorScheduler.revoke_task(tid)
+                break
+
+        _save_aws_endpoint_schedule(
+            endpoint_id, schedules[0] if len(schedules) == 1 else schedules
+        )
+        asyncio.run(
+            AWSAPIConnectorScheduler.make_schedule_disabled(stop_key=execution_key)
+        )
+        return jsonify({"success": True, "message": "Schedule stopped"})
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500

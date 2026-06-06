@@ -1484,6 +1484,59 @@ def azure_schedule_endpoint(endpoint_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@azure_integration_bp.route(
+    "/connector/endpoints/<int:endpoint_id>/schedules/stop", methods=["POST"]
+)
+def azure_stop_schedule(endpoint_id):
+    """Stop the schedule for an Azure connector endpoint.
+
+    Body JSON: { "user_id": ..., "execution_key": "azure_endpoint:<id>:<user>:interval" }
+    Mirrors apiConnector.stop_schedule but targets azure_external_app_endpoints
+    and AzureAPIConnectorScheduler.
+    """
+    try:
+        body = request.get_json(force=True) or {}
+        user_id = body.get("user_id") or _extract_user_id()
+
+        ok, err = _admin_only_check(user_id)
+        if not ok:
+            return err
+
+        execution_key = body.get("execution_key")
+        if not execution_key:
+            return jsonify({"success": False, "error": "execution_key missing"}), 400
+
+        existing = _get_azure_schedule_endpointdetails(endpoint_id)
+        if existing is None:
+            return jsonify({"success": False, "error": "Endpoint not found"}), 404
+
+        # schedules may be stored as a single dict or a list
+        schedules = [existing] if isinstance(existing, dict) else existing
+
+        for sch in schedules:
+            if sch.get("execution_key") == execution_key:
+                sch["status"] = "inactive"
+                if sch.get("celery_entry"):
+                    AzureAPIConnectorScheduler.disable_celery_entry(sch["celery_entry"])
+                if sch.get("celery_task_id"):
+                    AzureAPIConnectorScheduler.revoke_task(sch["celery_task_id"])
+                if sch.get("celery_task_ids"):
+                    for tid in sch["celery_task_ids"]:
+                        AzureAPIConnectorScheduler.revoke_task(tid)
+                break
+
+        _save_azure_endpoint_schedule(
+            endpoint_id, schedules[0] if len(schedules) == 1 else schedules
+        )
+        asyncio.run(
+            AzureAPIConnectorScheduler.make_schedule_disabled(stop_key=execution_key)
+        )
+        return jsonify({"success": True, "message": "Schedule stopped"})
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 # ─────────────────────────────────────────────────────────────
 # Global Azure Apps (templates curated by service@bytoid.ca)
 # ─────────────────────────────────────────────────────────────

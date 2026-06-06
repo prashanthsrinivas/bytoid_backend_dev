@@ -410,11 +410,12 @@ class LanceClient:
         result: dict,
         trigger: str,
         minute_bucket,
+        provider: str = "custom",
     ):
         await self._ensure_embeddings()
 
         table = await self.service._open_or_create_apiconnectors_table(
-            user_id, app_id, endpoint_id
+            user_id, app_id, endpoint_id, provider
         )
         print("✅ save_app_run called", user_id, app_id, endpoint_id)
         # Searchable text

@@ -2561,9 +2561,17 @@ class LanceDBServer:
             raise
 
     async def _open_or_create_apiconnectors_table(
-        self, user_id: str, app_id: str, endpoint_id: str
+        self, user_id: str, app_id: str, endpoint_id: str, provider: str = "custom"
     ):
-        table_name = f"apiconnectors_{user_id}_{app_id}_{endpoint_id}"
+        # app_id/endpoint_id are per-provider auto-increment PKs, so the same
+        # numeric pair can exist across external_apps / aws_external_apps /
+        # azure_external_apps / gcp_external_apps. Namespacing the table by
+        # provider keeps cloud runs from colliding with generic ones.
+        # "custom" keeps the legacy unprefixed name for backward compatibility.
+        if provider and provider != "custom":
+            table_name = f"apiconnectors_{provider}_{user_id}_{app_id}_{endpoint_id}"
+        else:
+            table_name = f"apiconnectors_{user_id}_{app_id}_{endpoint_id}"
         self.db = self._connect_if_needed()
 
         schema = pa.schema(
@@ -2634,13 +2642,14 @@ class LanceDBServer:
         endpoint_id: str,
         limit: int = 10,
         newest_first: bool = True,
+        provider: str = "custom",
     ):
         """
         Fetch the latest app run records for a given endpoint.
         Sorted by foldername (minute_bucket).
         """
         table = await self._open_or_create_apiconnectors_table(
-            user_id, app_id, endpoint_id
+            user_id, app_id, endpoint_id, provider
         )
 
         def _query():
@@ -2673,12 +2682,14 @@ class LanceDBServer:
                         r[field] = val
         return records
 
-    async def delete_app_runs(self, user_id: str, app_id: str, endpoint_id: str):
+    async def delete_app_runs(
+        self, user_id: str, app_id: str, endpoint_id: str, provider: str = "custom"
+    ):
         """
         Delete all runs for a given endpoint.
         """
         table = await self._open_or_create_apiconnectors_table(
-            user_id, app_id, endpoint_id
+            user_id, app_id, endpoint_id, provider
         )
 
         def _delete():
