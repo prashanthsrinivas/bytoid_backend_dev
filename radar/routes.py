@@ -5,7 +5,6 @@ import time
 import traceback
 import pymysql
 from agent_route.doc_clarity import QueryData
-from apiConnector.helpers import _execute_endpoint_internal
 from credits_route.route import Credits
 from cust_helpers import pathconfig
 from db.db_checkers import get_notes_data
@@ -264,49 +263,69 @@ def get_radar_sharedconfig(user_id):
 def radarapp(userid):
     logged_in_user_id, userid = parse_composite_user_id(userid)
     conn = connect_to_rds()
-    cur = conn.cursor(pymysql.cursors.DictCursor)
 
-    cur.execute(
-        """
-        SELECT
-            a.id AS app_id,
-            a.app_name,
+    # Generic ("custom") connectors plus the cloud providers. Each app carries
+    # a `provider` field so the picker can build the enriched data_sources.apps
+    # entries ({provider, app_id, endpoint_id}) consumed at runbook/report
+    # execution. Table names come from this fixed map, not user input.
+    _provider_tables = [
+        ("custom", "external_apps", "external_app_endpoints"),
+        ("aws", "aws_external_apps", "aws_external_app_endpoints"),
+        ("azure", "azure_external_apps", "azure_external_app_endpoints"),
+        ("gcp", "gcp_external_apps", "gcp_external_app_endpoints"),
+    ]
 
-            e.id   AS endpoint_id,
-            e.name,
-            e.path,
-            e.updated_at
+    def _collect(provider, apps_table, endpoints_table):
+        apps = {}
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        a.id AS app_id,
+                        a.app_name,
+                        e.id AS endpoint_id,
+                        e.name,
+                        e.path,
+                        e.updated_at
+                    FROM {apps_table} a
+                    LEFT JOIN {endpoints_table} e ON a.id = e.app_id
+                    WHERE a.user_id = %s
+                    ORDER BY a.id, e.id
+                    """,
+                    (userid,),
+                )
+                rows = cur.fetchall()
+        except Exception as e:
+            logger.warning("radar apps list failed for provider %s: %s", provider, e)
+            return []
 
-        FROM external_apps a
-        LEFT JOIN external_app_endpoints e
-            ON a.id = e.app_id
-        WHERE a.user_id = %s
-        ORDER BY a.id, e.id
-    """,
-        (userid,),
-    )
+        for row in rows:
+            app_id = row["app_id"]
+            if app_id not in apps:
+                apps[app_id] = {
+                    "id": app_id,
+                    "app_name": row["app_name"],
+                    "provider": provider,
+                    "endpoints": [],
+                }
+            if row["endpoint_id"] is not None:
+                apps[app_id]["endpoints"].append(
+                    {
+                        "id": row["endpoint_id"],
+                        "name": row["name"],
+                        "path": row["path"],
+                        "updated_at": row["updated_at"],
+                    }
+                )
+        return list(apps.values())
 
-    rows = cur.fetchall()
-    apps = {}
+    result = []
+    for provider, apps_table, endpoints_table in _provider_tables:
+        result.extend(_collect(provider, apps_table, endpoints_table))
 
-    for row in rows:
-        app_id = row["app_id"]
-
-        if app_id not in apps:
-            apps[app_id] = {"id": app_id, "app_name": row["app_name"], "endpoints": []}
-
-        # Only add endpoint if it exists
-        if row["endpoint_id"] is not None:
-            endpoint = {
-                "id": row["endpoint_id"],
-                "name": row["name"],
-                "path": row["path"],
-                "updated_at": row["updated_at"],
-            }
-
-            apps[app_id]["endpoints"].append(endpoint)
-
-    return jsonify(list(apps.values()))
+    conn.close()
+    return jsonify(result)
 
 
 async def retreval_from_sources(
@@ -320,23 +339,37 @@ async def retreval_from_sources(
     # APP SOURCE
     # -------------------------
     if main_source == "app":
-        endpoint_ids = filesources.get("endpoint_ids", [])
+        from runbook.utils import resolve_connector_endpoint_data
 
-        for endpoint_id in endpoint_ids:
+        # Enriched shape: apps=[{provider, app_id, endpoint_id}]
+        app_entries = list(filesources.get("apps") or [])
+        # Legacy shape: endpoint_ids=[...] → generic ("custom") connectors
+        for eid in filesources.get("endpoint_ids", []):
+            app_entries.append({"provider": "custom", "endpoint_id": eid})
+
+        for entry in app_entries:
+            provider = (entry.get("provider") or "custom").lower()
+            endpoint_id = entry.get("endpoint_id")
+            app_id = entry.get("app_id")
+            if endpoint_id is None:
+                continue
             try:
-                result = await _execute_endpoint_internal(
-                    endpoint_id=endpoint_id,
-                    userid=userid,
+                data_str, run_source = await resolve_connector_endpoint_data(
+                    conn, provider, endpoint_id, app_id
                 )
                 data_for_review.append(
                     {
                         "type": "app",
+                        "provider": provider,
                         "endpoint_id": endpoint_id,
-                        "data": str(result.get("response")),
+                        "run_source": run_source,
+                        "data": data_str,
                     }
                 )
             except Exception as e:
-                data_for_review.append({"endpoint_id": endpoint_id, "error": str(e)})
+                data_for_review.append(
+                    {"endpoint_id": endpoint_id, "provider": provider, "error": str(e)}
+                )
 
     # -------------------------
     # NOTES SOURCE
