@@ -1,0 +1,54 @@
+{
+    "block_id": "osint-intelligence-assessment",
+    "block_type": "narrative",
+    "title": "OSINT Intelligence Assessment",
+    "editable": true,
+    "exportable": true,
+    "micro_blocks": [
+        {
+            "type": "instruction_group",
+            "title": "Executive Summary",
+            "items": [
+                "State the overall OSINT assessment outcome for the vendor",
+                "Summarize the key observations across all intelligence categories",
+                "Call out the key risk indicators surfaced by collection"
+            ]
+        },
+        {
+            "type": "instruction_group",
+            "title": "Intelligence Summary",
+            "items": [
+                "Corporate findings (profile, ownership, revenue/employee estimates)",
+                "Security findings (exposure, infrastructure, vulnerabilities)",
+                "Compliance findings (certifications, trust center, security commitments)",
+                "Reputation findings (news, public incidents, reputation indicators)"
+            ]
+        },
+        {
+            "type": "instruction_group",
+            "title": "Significant Findings",
+            "items": [
+                "Critical observations and why they matter",
+                "High-risk observations requiring attention",
+                "Recommended actions, each tied to its supporting evidence"
+            ]
+        },
+        {
+            "type": "instruction_group",
+            "title": "Evidence Summary",
+            "items": [
+                "Number of findings collected",
+                "Number of evidence artifacts generated",
+                "Collection timestamps / scan window"
+            ]
+        },
+        {
+            "type": "instruction_group",
+            "title": "Dashboard Reference",
+            "items": [
+                "Live Vendor Intelligence Dashboard: {{VRA_DASHBOARD_URL}}",
+                "Reviewers can navigate from the report into the dashboard for drill-down"
+            ]
+        }
+    ]
+}

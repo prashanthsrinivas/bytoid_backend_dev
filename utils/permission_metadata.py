@@ -96,6 +96,29 @@ PERMISSION_METADATA = {
         "dependencies": ["compliance.standalone.create"]
     },
 
+    # ================= VENDOR RISK ASSESSMENT (VRA) =================
+    # VRA builds on the runbook/compliance engine: creating a VRA produces a
+    # runbook, and its intelligence/dashboard are scoped by the same sharing
+    # model. Registered here so resolve_permissions does not silently drop them.
+    "vra.assessment.create": {
+        "label": "Create Vendor Risk Assessments",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "compliance.runbook.create"]
+    },
+    "vra.intelligence.read": {
+        "label": "View Vendor Intelligence",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine", "compliance.runbook.read"]
+    },
+    "vra.dashboard.read": {
+        "label": "View Vendor Intelligence Dashboard",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine", "vra.intelligence.read"]
+    },
+
     # ================= TRACKERS =================
     "trackers.table.view": {
         "label": "View Trackers",

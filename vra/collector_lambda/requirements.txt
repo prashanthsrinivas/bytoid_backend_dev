@@ -1,0 +1,4 @@
+# Lambda-only runtime deps for the VRA OSINT collector.
+# Kept minimal so the bundle stays well under the Lambda size limit.
+requests==2.32.5
+dnspython==2.8.0

@@ -108,6 +108,17 @@ mutation: ## Run mutmut mutation testing on safety-critical modules (slow, night
 		--no-progress
 	mutmut results 2>&1 | tee mutmut-results.txt
 
+# ── VRA OSINT collector Lambda ─────────────────────────────────────────────
+
+.PHONY: deploy-vra-lambda
+deploy-vra-lambda: ## Create/update the VRA OSINT collector Lambda (needs admin/CI creds + CALLBACK_URL, HMAC_SECRET).
+	$(PYTHON) -m vra.collector_lambda.deploy \
+		--function $(or $(VRA_FUNCTION),vra-osint-collector) \
+		--region $(or $(AWS_REGION),ca-central-1) \
+		$(if $(AWS_PROFILE),--profile $(AWS_PROFILE),) \
+		--callback-url "$(VRA_CALLBACK_URL)" \
+		--hmac-secret "$(VRA_HMAC_SECRET)"
+
 # ── Aggregate ──────────────────────────────────────────────────────────────
 
 .PHONY: all-checks

@@ -36,6 +36,9 @@ EXEMPT_PATHS = [
     "/microsoft/login",
     "/microsoft/callback",
     "/microsoft/login/debug",
+    # VRA OSINT collector Lambda posts findings here; authenticated by its own
+    # HMAC signature + nonce, not the user session.
+    "/vra/osint/callback",
 ]
 
 

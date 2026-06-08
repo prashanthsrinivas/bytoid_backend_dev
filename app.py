@@ -56,6 +56,7 @@ from workflow_route.routes import workflow_bp
 from tests_routes.routes import tests_bp
 from ai_governance.routes import ai_governance_bp
 from assessment_chat.routes import assessment_chat_bp
+from vra.routes import vra_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -285,6 +286,7 @@ blueprints = [
     tests_bp,
     ai_governance_bp,
     assessment_chat_bp,
+    vra_bp,
 ]
 
 for bp in blueprints:
