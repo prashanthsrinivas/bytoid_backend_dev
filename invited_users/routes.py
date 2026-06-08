@@ -1049,6 +1049,7 @@ def get_permissions():
         "radar": "Radar",
         "policyhub": "Policy Hub",
         "trustcenter": "Trust Center",
+        "vra": "Vendor Risk Assessment",
     }
 
     for key, label in PERMISSIONS.items():

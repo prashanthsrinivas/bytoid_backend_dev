@@ -17,6 +17,10 @@ PERMISSIONS = {
     "compliance.standalone.edit": "Edit Standalone Reports",
     "compliance.standalone.delete": "Delete Standalone Reports",
     "compliance.runbook.read": "View Runbooks",
+    # ================= VENDOR RISK ASSESSMENT (VRA) =================
+    "vra.assessment.create": "Create Vendor Risk Assessments",
+    "vra.intelligence.read": "View Vendor Intelligence",
+    "vra.dashboard.read": "View Vendor Intelligence Dashboard",
     # ================= TRACKERS =================
     "trackers.table.view": "View Trackers",
     "trackers.table.create": "Create Table",
