@@ -81,11 +81,27 @@ def vra_create_assessment():
         vendor_name=data.get("vendor_name", ""),
         vendor_domain=data.get("vendor_domain", ""),
     )
+
+    # If linked to an existing workflow, weave the two locked vendor questions in
+    # immediately (the OSINT-derived ones follow after the first scan). Best-effort.
+    injected = False
+    if record.get("playbook_id"):
+        try:
+            from vra.workflow_inject import inject_into_workflow, vendor_question_items
+
+            result = inject_into_workflow(
+                user_id, record["playbook_id"], vendor_items=vendor_question_items()
+            )
+            injected = result.get("status") == "success"
+        except Exception:
+            logger.warning("VRA vendor-question injection failed on create", exc_info=True)
+
     return jsonify(
         {
             "status": "success",
             "assessment": record,
             "default_questions": build_default_question_items(),
+            "questions_injected": injected,
         }
     ), 201
 
