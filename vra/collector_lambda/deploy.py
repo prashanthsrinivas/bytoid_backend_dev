@@ -133,17 +133,29 @@ def deploy(args) -> None:
         exists = False
 
     if exists:
+        # The code update is the essential step. The post-update waiter and the
+        # config/env update are best-effort: they need lambda:GetFunctionConfiguration
+        # / UpdateFunctionConfiguration, which a minimal deploy policy may omit —
+        # a missing perm there must not abort an otherwise-successful code update.
         lam.update_function_code(FunctionName=args.function, ZipFile=code, Publish=True)
-        lam.get_waiter("function_updated").wait(FunctionName=args.function)
-        lam.update_function_configuration(
-            FunctionName=args.function,
-            Handler=HANDLER,
-            Runtime=RUNTIME,
-            Timeout=TIMEOUT,
-            MemorySize=MEMORY,
-            Environment=env,
-        )
-        print(f"Updated {args.function} in {args.region}.")
+        print(f"Updated code for {args.function} in {args.region}.")
+        try:
+            lam.get_waiter("function_updated").wait(FunctionName=args.function)
+        except Exception as exc:
+            print(f"  (skipped update-wait: {exc})")
+            time.sleep(5)  # give the code update a moment to settle
+        try:
+            lam.update_function_configuration(
+                FunctionName=args.function,
+                Handler=HANDLER,
+                Runtime=RUNTIME,
+                Timeout=TIMEOUT,
+                MemorySize=MEMORY,
+                Environment=env,
+            )
+            print("  Updated configuration.")
+        except Exception as exc:
+            print(f"  (skipped configuration update: {exc})")
     else:
         lam.create_function(
             FunctionName=args.function,
