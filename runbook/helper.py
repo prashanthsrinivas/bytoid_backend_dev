@@ -1767,6 +1767,38 @@ async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record
 
         # print("📥 INPUT:", runtime_input)
 
+        # 💸 COST GUARD: skip the (expensive) AI analysis when the input that
+        # actually drives the model is byte-for-byte identical to the last run
+        # that COMPLETED for this endpoint+runbook. Scheduled/interval endpoints
+        # re-fetch on every tick; without this, each tick re-pays the full Bedrock
+        # bill even when nothing changed and nobody is using the feature. The
+        # fingerprint is written only AFTER a successful run (see below) so a
+        # failed run still retries instead of being suppressed.
+        import hashlib
+        from services.redis_service import get_redis
+
+        _redis = get_redis()
+        _runbook_id = runbook.get("runbook_id") or runbook.get("name") or "rb"
+        _fp_key = f"runbook_lasthash:{user_id}:{endpoint_id}:{_runbook_id}"
+        _current_fp = hashlib.sha256(
+            str(runtime_input or "").encode("utf-8")
+        ).hexdigest()
+        try:
+            _last_fp = await _redis.get(_fp_key)
+            if isinstance(_last_fp, bytes):
+                _last_fp = _last_fp.decode("utf-8")
+            if _last_fp == _current_fp:
+                logger.info(
+                    "Runbook input unchanged for endpoint %s (runbook %s) — "
+                    "skipping AI analysis to avoid duplicate cost",
+                    endpoint_id,
+                    _runbook_id,
+                )
+                return {"status": "skipped_unchanged"}
+        except Exception as _fp_exc:
+            # Never let the cost guard block a real run; fail open.
+            logger.warning("runbook change-detection read failed (proceeding): %s", _fp_exc)
+
         # ✅ 3. EXECUTE (THIS WILL CREATE RESULT ENTRY)
         await run_runbook_execution_engine(
             dbserver=dbserver,
@@ -1775,6 +1807,14 @@ async def trigger_runbooks_for_api_response(user_id, app_id, endpoint_id, record
             structure_file=structure_file,
             structure_file_payload=structure_file_payload,
         )
+
+        # Persist the fingerprint only after a successful run so that the next
+        # identical scheduled tick is skipped, while a failed run still retries.
+        try:
+            await _redis.set(_fp_key, _current_fp, ex=30 * 24 * 3600)
+        except Exception as _fp_exc:
+            logger.warning("runbook change-detection write failed: %s", _fp_exc)
+
         return {"status": "success"}
 
     except Exception as e:

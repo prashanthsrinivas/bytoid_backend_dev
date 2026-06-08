@@ -805,7 +805,8 @@ def run_schedule_app(self, userid, app_id):
         return "SKIPPED — schedule disabled by user"
 
     try:
-        return _execute_app_internal(app_id, userid)
+        # _execute_app_internal is async — must be awaited or it no-ops.
+        return asyncio.run(_execute_app_internal(app_id, userid))
     except Exception as e:
         self.retry(exc=e, countdown=5)
 
@@ -823,7 +824,8 @@ def run_schedule_app_endpoint(self, userid, endpoint_id, context=None):
         return "SKIPPED — schedule disabled by user"
 
     try:
-        result = _execute_endpoint_internal(endpoint_id, userid, context)
+        # _execute_endpoint_internal is async — must be awaited or it no-ops.
+        result = asyncio.run(_execute_endpoint_internal(endpoint_id, userid, context))
         if result:
             completed_endpoint_schedule(endpoint_id=endpoint_id)
         return result
@@ -840,14 +842,26 @@ def run_endpoint_interval(self, userid, endpoint_id, interval_seconds, stop_key=
     from services.scheduler_service import APIConnectorScheduler
     from apiConnector.helpers import _execute_endpoint_internal
 
+    # Without a stop_key there is no way to ever disable this interval, so it
+    # would self-reschedule forever. Refuse to start an ungovernable loop.
+    if not stop_key:
+        logger.warning(
+            "run_endpoint_interval called without stop_key (endpoint %s) — "
+            "not scheduling an unstoppable interval",
+            endpoint_id,
+        )
+        return {"stopped": True, "reason": "missing_stop_key"}
+
     # Check if user disabled this schedule
-    if stop_key and asyncio.run(APIConnectorScheduler.is_schedule_disabled(stop_key)):
+    if asyncio.run(APIConnectorScheduler.is_schedule_disabled(stop_key)):
         return {"stopped": True}
 
     try:
-        # Execute the endpoint
-        _execute_endpoint_internal(endpoint_id, userid)
+        # Execute the endpoint (async — must be awaited or it silently no-ops)
+        asyncio.run(_execute_endpoint_internal(endpoint_id, userid))
     except Exception as e:
+        # retry() raises, so the reschedule below is skipped on failure; that is
+        # intentional — Celery re-runs this task and will reschedule on success.
         self.retry(exc=e, countdown=5)
 
     # Reschedule self

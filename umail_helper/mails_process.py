@@ -190,6 +190,11 @@ async def generate_subject(user_id, output_path, channel):
             # print("❌ Missing user_id or filename")
             return None
 
+        # 💸 COST GUARD: skip the Bedrock summarization entirely when AI is not
+        # enabled for this user (global env switch or per-user umail_json flag).
+        if not email_ai_summarization_enabled(user_id):
+            return None
+
         # print(f"output_path: {output_path}")
         with open(output_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -1017,6 +1022,48 @@ def normalize_datetimes(obj):
         return obj.isoformat()
     else:
         return obj
+
+
+def email_ai_summarization_enabled(user_id):
+    """Whether per-email AI subject summarization should run for this user.
+
+    💸 COST GUARD: ``generate_subject`` calls Bedrock for EVERY inbound message
+    on a connected mailbox, even when the user never opens the assistant — so a
+    merely-connected-but-unused mailbox bills AI continuously. This gives an
+    explicit off switch:
+
+    * Global kill switch: ``EMAIL_AI_SUMMARIZATION_ENABLED=false`` disables it
+      everywhere instantly (default is ``true`` → unchanged behavior).
+    * Per-user override: ``users.umail_json`` may carry ``{"ai_summarization":
+      false}`` to disable it for a single account without a schema change.
+
+    Fails OPEN (returns ``True``) on any DB/parse error so a transient issue can
+    never silently break the feature.
+    """
+    if os.getenv("EMAIL_AI_SUMMARIZATION_ENABLED", "true").strip().lower() == "false":
+        return False
+
+    connection = None
+    try:
+        connection = connect_to_rds()
+        if connection is None:
+            return True
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT umail_json FROM users WHERE user_id = %s", (user_id,)
+            )
+            row = cursor.fetchone()
+        raw = row[0] if row else None
+        if raw:
+            settings = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(settings, dict) and settings.get("ai_summarization") is False:
+                return False
+    except Exception:
+        return True
+    finally:
+        if connection:
+            connection.close()
+    return True
 
 
 def check_mailbox(user_id):
