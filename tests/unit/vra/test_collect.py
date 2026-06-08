@@ -192,6 +192,18 @@ def test_callback_success(cfg, monkeypatch, svc):
 
 
 @pytest.mark.unit
+def test_callback_titlecased_headers(cfg, monkeypatch, svc):
+    # Werkzeug normalizes X-VRA-Timestamp -> X-Vra-Timestamp; the callback must
+    # still accept them (regression for the header-case bug that 401'd every
+    # real Lambda callback).
+    _patch_redis(monkeypatch)
+    raw, headers = _signed(_snapshot())
+    titlecased = {k.title(): v for k, v in headers.items()}  # X-Vra-Timestamp, etc.
+    code, body = _run(collect_mod.process_callback(raw, titlecased, service=svc))
+    assert code == 200 and body["findings"] == 1
+
+
+@pytest.mark.unit
 def test_callback_bad_signature(cfg, monkeypatch, svc):
     _patch_redis(monkeypatch)
     raw, headers = _signed(_snapshot())

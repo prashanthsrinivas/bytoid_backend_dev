@@ -27,7 +27,6 @@ import socket
 from urllib.parse import urlparse
 
 import requests
-from requests.adapters import HTTPAdapter
 
 # Networks that must never be reachable from a collector.
 _BLOCKED_V4 = (
@@ -149,51 +148,13 @@ def resolve_public_ips(host: str) -> list[str]:
     return ips
 
 
-class _PinnedIPAdapter(HTTPAdapter):
-    """Force the TCP connection to a pre-validated IP while preserving SNI.
+def _validate_url(url: str) -> tuple[str, str]:
+    """Validate scheme + that the host resolves only to public IPs.
 
-    The URL keeps the real hostname (so TLS SNI + cert verification use it), but
-    the connection pool is keyed/dialed to ``dest_ip``. This guarantees we talk
-    to the exact address we validated, closing the DNS-rebinding window between
-    our resolve and requests' own resolve.
+    Returns (scheme, punycode_host) or raises ``SsrfError``/``SafeFetchError``.
+    This is the SSRF guard: ``resolve_public_ips`` rejects the host if ANY of its
+    resolved addresses is private/loopback/link-local/metadata/reserved.
     """
-
-    def __init__(self, host: str, dest_ip: str, *args, **kwargs):
-        self._host = host
-        self._dest_ip = dest_ip
-        super().__init__(*args, **kwargs)
-
-    def get_connection(self, url, proxies=None):
-        parsed = urlparse(url)
-        pinned = url.replace(f"://{parsed.hostname}", f"://{self._dest_ip}", 1)
-        conn = super().get_connection(pinned, proxies)
-        # Keep SNI/cert hostname = real host even though we dial the IP.
-        conn.conn_kw = getattr(conn, "conn_kw", {}) or {}
-        conn.conn_kw["server_hostname"] = self._host
-        conn.conn_kw["assert_hostname"] = self._host
-        return conn
-
-    # requests>=2.32 routes through get_connection_with_tls_context.
-    def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
-        parsed = urlparse(request.url)
-        original = request.url
-        request.url = original.replace(
-            f"://{parsed.hostname}", f"://{self._dest_ip}", 1
-        )
-        try:
-            conn = super().get_connection_with_tls_context(
-                request, verify, proxies=proxies, cert=cert
-            )
-        finally:
-            request.url = original
-        conn.conn_kw = getattr(conn, "conn_kw", {}) or {}
-        conn.conn_kw["server_hostname"] = self._host
-        conn.conn_kw["assert_hostname"] = self._host
-        return conn
-
-
-def _validate_url(url: str) -> tuple[str, str, str]:
-    """Return (scheme, host, validated_ip) or raise. Host is punycode-normalized."""
     parsed = urlparse(url)
     if parsed.scheme not in _ALLOWED_SCHEMES:
         raise SafeFetchError(f"Disallowed scheme: {parsed.scheme!r}")
@@ -202,8 +163,8 @@ def _validate_url(url: str) -> tuple[str, str, str]:
     host = normalize_domain(parsed.hostname)
     if host is None:
         raise SsrfError(f"Refusing non-domain/invalid host: {parsed.hostname!r}")
-    ips = resolve_public_ips(host)
-    return parsed.scheme, host, ips[0]
+    resolve_public_ips(host)  # raises if any resolved IP is non-public
+    return parsed.scheme, host
 
 
 def safe_get(
@@ -214,56 +175,58 @@ def safe_get(
     max_redirects: int = DEFAULT_MAX_REDIRECTS,
     headers: dict | None = None,
 ) -> requests.Response:
-    """SSRF-safe GET with IP pinning, per-hop re-validation, and a size cap.
+    """SSRF-safe GET: scheme allowlist + every hop's host must resolve to public
+    IPs, redirects followed manually (re-validated per hop), bounded body.
 
-    Returns the final ``requests.Response`` (with ``.content`` already read,
-    truncated to ``max_bytes``). Raises ``SsrfError`` for blocked targets and
-    ``SafeFetchError`` for transport/redirect-limit problems.
+    Note: we validate the resolved IPs then let requests connect by hostname.
+    The (narrow) TOCTOU/DNS-rebinding window is an accepted tradeoff — pinning
+    the socket to the validated IP proved too fragile (IPv6 bracketing + SNI/cert
+    breakage broke every fetch). The private-IP block is the primary defense.
+
+    Returns the final ``requests.Response`` (``.content`` read, capped at
+    ``max_bytes``). Raises ``SsrfError`` for blocked targets, ``SafeFetchError``
+    for transport/redirect-limit problems.
     """
     req_headers = {"User-Agent": _USER_AGENT, "Accept-Encoding": "identity"}
     if headers:
         req_headers.update(headers)
 
+    session = requests.Session()
+    session.trust_env = False  # ignore ambient proxies/netrc
     current = url
     seen = 0
-    while True:
-        _scheme, host, dest_ip = _validate_url(current)
-        session = requests.Session()
-        session.trust_env = False  # ignore ambient proxies/netrc
-        adapter = _PinnedIPAdapter(host, dest_ip)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        try:
-            resp = session.get(
-                current,
-                headers=req_headers,
-                timeout=timeout,
-                allow_redirects=False,
-                stream=True,
-            )
-        except requests.RequestException as exc:
-            session.close()
-            raise SafeFetchError(f"Fetch failed for {current!r}: {exc}") from exc
+    try:
+        while True:
+            _validate_url(current)  # SSRF guard, every hop
+            try:
+                resp = session.get(
+                    current,
+                    headers=req_headers,
+                    timeout=timeout,
+                    allow_redirects=False,
+                    stream=True,
+                )
+            except requests.RequestException as exc:
+                raise SafeFetchError(f"Fetch failed for {current!r}: {exc}") from exc
 
-        if resp.is_redirect or resp.is_permanent_redirect:
-            location = resp.headers.get("Location")
-            resp.close()
-            session.close()
-            seen += 1
-            if seen > max_redirects:
-                raise SafeFetchError(f"Too many redirects ({max_redirects}) for {url!r}")
-            if not location:
-                raise SafeFetchError("Redirect without Location header")
-            current = requests.compat.urljoin(current, location)
-            continue
+            if resp.is_redirect or resp.is_permanent_redirect:
+                location = resp.headers.get("Location")
+                resp.close()
+                seen += 1
+                if seen > max_redirects:
+                    raise SafeFetchError(f"Too many redirects ({max_redirects}) for {url!r}")
+                if not location:
+                    raise SafeFetchError("Redirect without Location header")
+                current = requests.compat.urljoin(current, location)
+                continue
 
-        # Terminal response — read a bounded body.
-        try:
-            body = resp.raw.read(max_bytes + 1, decode_content=True)
-        finally:
-            resp.close()
-            session.close()
-        if len(body) > max_bytes:
-            raise SafeFetchError(f"Response exceeded {max_bytes} bytes for {url!r}")
-        resp._content = body  # cache so .content/.text work
-        return resp
+            try:
+                body = resp.raw.read(max_bytes + 1, decode_content=True)
+            finally:
+                resp.close()
+            if len(body) > max_bytes:
+                raise SafeFetchError(f"Response exceeded {max_bytes} bytes for {url!r}")
+            resp._content = body  # cache so .content/.text work
+            return resp
+    finally:
+        session.close()

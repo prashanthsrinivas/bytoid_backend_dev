@@ -135,9 +135,13 @@ async def process_callback(
     if len(raw_body) > vra_config.VRA_CALLBACK_MAX_BYTES:
         return 413, {"status": "error", "message": "payload too large"}
 
-    ts = headers.get(TS_HEADER, "")
-    nonce = headers.get(NONCE_HEADER, "")
-    sig = headers.get(SIG_HEADER, "")
+    # Case-insensitive header lookup: WSGI/Werkzeug normalizes header names
+    # (e.g. X-VRA-Timestamp -> X-Vra-Timestamp), so an exact-case .get() on a
+    # plain dict would miss and wrongly 401. Normalize to lowercase keys.
+    hdr = {str(k).lower(): v for k, v in (headers or {}).items()}
+    ts = hdr.get(TS_HEADER.lower(), "")
+    nonce = hdr.get(NONCE_HEADER.lower(), "")
+    sig = hdr.get(SIG_HEADER.lower(), "")
 
     if not timestamp_within_skew(ts, vra_config.VRA_CALLBACK_MAX_SKEW):
         return 401, {"status": "error", "message": "timestamp out of range"}
