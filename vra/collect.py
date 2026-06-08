@@ -183,5 +183,28 @@ async def process_callback(
     await record_fingerprint(assessment_id, fingerprint)
     await release_inflight(assessment_id)
 
+    # Weave the VRA questions into the linked questionnaire (best-effort): the two
+    # locked vendor questions + freshly-derived OSINT follow-ups, as their own
+    # "Vendor Intelligence" section. replace_osint refreshes prior derived
+    # questions on a re-scan rather than piling up. Never breaks the callback.
+    playbook_id = record.get("playbook_id")
+    if playbook_id:
+        try:
+            from vra.workflow_inject import (
+                derive_osint_questions,
+                inject_into_workflow,
+                vendor_question_items,
+            )
+
+            inject_into_workflow(
+                user_id,
+                playbook_id,
+                vendor_items=vendor_question_items(),
+                osint_items=derive_osint_questions(snapshot),
+                replace_osint=True,
+            )
+        except Exception:
+            logger.warning("VRA question injection failed for %s", assessment_id, exc_info=True)
+
     logger.info("Stored VRA snapshot %s (%d findings)", scan_id, len(snapshot["findings"]))
     return 200, {"status": "success", "scan_id": scan_id, "findings": len(snapshot["findings"])}
