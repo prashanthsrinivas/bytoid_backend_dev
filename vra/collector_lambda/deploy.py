@@ -98,7 +98,7 @@ def _ensure_role(session, function: str) -> str:
         role = iam.create_role(
             RoleName=role_name,
             AssumeRolePolicyDocument=json.dumps(assume),
-            Description="VRA OSINT collector — CloudWatch Logs only.",
+            Description="VRA OSINT collector - CloudWatch Logs only.",
         )["Role"]
         iam.attach_role_policy(
             RoleName=role_name,
@@ -114,7 +114,10 @@ def deploy(args) -> None:
 
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
     lam = session.client("lambda")
-    role_arn = _ensure_role(session, args.function)
+    # Reuse a caller-supplied execution role when given (no iam:CreateRole needed —
+    # the caller only needs lambda:CreateFunction + iam:PassRole on that role);
+    # otherwise create a least-privilege role.
+    role_arn = args.role_arn or _ensure_role(session, args.function)
     code = _build_zip()
     env = {
         "Variables": {
@@ -167,6 +170,12 @@ def main() -> None:
     p.add_argument("--function", default="vra-osint-collector")
     p.add_argument("--region", default=os.getenv("AWS_REGION", "ca-central-1"))
     p.add_argument("--profile", default=None, help="admin/CI AWS profile (NOT the app role)")
+    p.add_argument(
+        "--role-arn",
+        default=None,
+        help="Existing Lambda execution role ARN to reuse (skips iam:CreateRole; "
+        "caller needs lambda:CreateFunction + iam:PassRole on it).",
+    )
     p.add_argument("--callback-url", required=True)
     p.add_argument("--hmac-secret", required=True)
     deploy(p.parse_args())
