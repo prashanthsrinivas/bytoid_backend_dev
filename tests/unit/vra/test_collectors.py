@@ -121,7 +121,9 @@ class _Good(BaseCollector):
     name = "good"
     def collect(self, ctx):
         from vra.osint.normalize import make_finding
-        return [make_finding(category="domain", evidence_type="t", source="s", finding_summary="x")]
+        # High-relevance so it survives the run_collection relevance filter.
+        return [make_finding(category="security", evidence_type="known_exploited_vulnerability",
+                             source="s", finding_summary="x", severity="critical")]
 
 
 class _Bad(BaseCollector):

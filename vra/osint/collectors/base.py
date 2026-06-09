@@ -106,6 +106,26 @@ def run_collection(
         except Exception as exc:  # isolate — one collector never breaks the scan
             status[collector.name] = f"error: {type(exc).__name__}: {exc}"
 
+    # Risk-relevance pass: score + classify every finding, suppress noise below
+    # the threshold, dedup. Favors fewer high-value findings over many generic
+    # ones. Never raises — on any error we fall back to the raw findings.
+    raw_count = len(findings)
+    try:
+        from vra import config as vra_config
+        from vra.osint.relevance import annotate_and_filter
+
+        findings = annotate_and_filter(
+            findings,
+            vendor_name=vendor_name,
+            vendor_domain=domain,
+            threshold=vra_config.VRA_RELEVANCE_THRESHOLD,
+        )
+        status["_relevance"] = (
+            f"kept {len(findings)}/{raw_count} (threshold {vra_config.VRA_RELEVANCE_THRESHOLD})"
+        )
+    except Exception as exc:
+        status["_relevance"] = f"error: {type(exc).__name__}: {exc}"
+
     return build_snapshot(
         scan_id=scan_id,
         assessment_id=assessment_id,

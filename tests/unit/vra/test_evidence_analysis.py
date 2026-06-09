@@ -105,7 +105,7 @@ def test_render_markdown_cites_sources():
 @pytest.mark.unit
 def test_render_markdown_no_findings():
     md = ri.render_context_markdown(ri.build_analysis_context(_snap([])))
-    assert "No significant" in md
+    assert "No material" in md
 
 
 # ── runbook bridge ───────────────────────────────────────────────────────────

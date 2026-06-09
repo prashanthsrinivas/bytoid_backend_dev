@@ -56,6 +56,11 @@ VRA_RESCAN_CADENCE_DAYS = _int("VRA_RESCAN_CADENCE_DAYS", 30)
 # with the Redis change-detection dedup).
 VRA_LLM_BUDGET_CHARS = _int("VRA_LLM_BUDGET_CHARS", 60_000)
 
+# Findings scoring below this 0-100 relevance threshold are suppressed as noise
+# (industry-wide news, keyword-only matches, generic DNS). Higher = stricter /
+# fewer, higher-value findings.
+VRA_RELEVANCE_THRESHOLD = _int("VRA_RELEVANCE_THRESHOLD", 35)
+
 # --- safe_fetch transport defaults ------------------------------------------
 VRA_FETCH_TIMEOUT = _int("VRA_FETCH_TIMEOUT_SECONDS", 15)
 VRA_FETCH_MAX_BYTES = _int("VRA_FETCH_MAX_BYTES", 5 * 1024 * 1024)
