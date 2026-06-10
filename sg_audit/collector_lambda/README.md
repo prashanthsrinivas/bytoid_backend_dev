@@ -81,6 +81,12 @@ Set in the app environment:
 - `SG_CALLBACK_BASE_URL` — public HTTPS base (e.g. `https://api.bytoid.ai`)
 - `SG_HMAC_SECRET` — same secret passed to `--hmac-secret` above
 
-Until both `SG_LAMBDA_ARN` and `SG_HMAC_SECRET` are set, the app runs in
-collection-disabled mode (audits register, but `collect` returns
-`{"status": "disabled"}` — a safe no-op).
+### In-process fallback (no Lambda required)
+
+If `SG_LAMBDA_ARN`/`SG_HMAC_SECRET` are **not** set, the app falls back to running
+the *same* collection logic (`runner.run_collection`) in-process, in a background
+thread, using the caller's connected AWS session — so the feature works with just
+an AWS connection and no Lambda deploy. The connected (management) account is
+audited directly with no assume-role; other accounts in scope still use the
+cross-account audit role above. The Lambda remains the preferred path (isolation
++ scale beyond the app's request budget) once configured.

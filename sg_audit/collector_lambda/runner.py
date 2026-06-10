@@ -136,6 +136,13 @@ def run_collection(
         except Exception as exc:
             collector_status["_discovery"] = _err(exc)
 
+    # Fallback: if no explicit list and discovery found nothing (e.g. not an
+    # Organizations management account), at least audit the connected account
+    # directly so a single-account setup works with zero extra config.
+    if not targets and management_account_id:
+        targets = [management_account_id]
+        collector_status.setdefault("_discovery", "no org accounts; audited connected account")
+
     if not targets:
         if "_discovery" not in collector_status:
             collector_status["_discovery"] = "error: no_accounts"
@@ -149,7 +156,12 @@ def run_collection(
     # --- Per-account fan-out -------------------------------------------------
     for account_id in targets:
         try:
-            acct_session = _assume(session, account_id, role_name, external_id)
+            if account_id and management_account_id and account_id == management_account_id:
+                # The connected account itself — use the base session directly
+                # (no assume-role / audit role deployment required).
+                acct_session = session
+            else:
+                acct_session = _assume(session, account_id, role_name, external_id)
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
             if code in ("ExpiredToken", "ExpiredTokenException"):

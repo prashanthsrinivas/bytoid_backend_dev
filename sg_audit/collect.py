@@ -13,7 +13,9 @@ each member account; they are not the Lambda's own identity.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -126,16 +128,12 @@ async def trigger_collection(
         return {"status": "error", "message": "audit not found"}
     if not service.ready_for_collection(record):
         return {"status": "skipped", "reason": "no target accounts or discovery configured"}
-    if not sg_config.collection_enabled():
-        return {"status": "disabled", "reason": "collector Lambda/HMAC not configured"}
 
-    callback_url = _callback_url()
-    if not callback_url:
-        return {"status": "error", "message": "no callback URL configured"}
-
+    # A base AWS session is required for BOTH paths: the Lambda assumes member
+    # roles FROM these creds, and the in-process fallback uses them directly.
     status, session_row = _base_session(user_id, sg_config.SG_MIN_SESSION_TTL_SECONDS)
     if status == "no_session":
-        return {"status": "no_session", "reason": "authenticate first via /aws/saml/login"}
+        return {"status": "no_session", "reason": "connect an AWS account first via /aws/saml/login"}
     if status == "expiring":
         return {
             "status": "session_expiring",
@@ -151,46 +149,147 @@ async def trigger_collection(
         return {"status": "already_running"}
 
     scan_id = uuid.uuid4().hex
-    # Pre-write the in-flight state BEFORE invoking so the callback's
+    # Pre-write the in-flight state BEFORE launching so the callback's
     # (user_id, audit_id) consistency guard always finds the record.
     record["scan_state"] = SCAN_IN_FLIGHT
     service.storage.save_audit(user_id, record)
 
-    payload = {
-        "scan_id": scan_id,
-        "audit_id": audit_id,
-        "user_id": user_id,
-        "callback_url": callback_url,
-        "hmac_secret": sg_config.SG_HMAC_SECRET,
-        "external_id": record.get("external_id", ""),
-        "scope": scope,
-        # Short-lived base STS creds the Lambda assumes member roles FROM.
-        "base_credentials": {
-            "access_key_id": session_row["aws_access_key_id"],
-            "secret_access_key": session_row["aws_secret_access_key"],
-            "session_token": session_row.get("aws_session_token"),
-            "region": session_row.get("aws_region") or sg_config.AWS_REGION,
-        },
-        "management_account_id": session_row.get("aws_account_id", ""),
+    base_credentials = {
+        "access_key_id": session_row["aws_access_key_id"],
+        "secret_access_key": session_row["aws_secret_access_key"],
+        "session_token": session_row.get("aws_session_token"),
+        "region": session_row.get("aws_region") or sg_config.AWS_REGION,
     }
+    management_account_id = session_row.get("aws_account_id", "")
 
+    # --- Preferred path: hand off to the isolated collector Lambda ----------
+    if sg_config.collection_enabled():
+        callback_url = _callback_url()
+        if not callback_url:
+            record["scan_state"] = SCAN_PENDING
+            service.storage.save_audit(user_id, record)
+            await release_inflight(audit_id)
+            return {"status": "error", "message": "no callback URL configured"}
+
+        payload = {
+            "scan_id": scan_id,
+            "audit_id": audit_id,
+            "user_id": user_id,
+            "callback_url": callback_url,
+            "hmac_secret": sg_config.SG_HMAC_SECRET,
+            "external_id": record.get("external_id", ""),
+            "scope": scope,
+            "base_credentials": base_credentials,
+            "management_account_id": management_account_id,
+        }
+        try:
+            client = lambda_client or _lambda_client()
+            client.invoke(
+                FunctionName=sg_config.SG_LAMBDA_ARN,
+                InvocationType="Event",  # async fire-and-forget
+                Payload=json.dumps(payload).encode("utf-8"),
+            )
+        except Exception as exc:
+            logger.warning("SG-audit Lambda invoke failed: %s", exc, exc_info=True)
+            record["scan_state"] = SCAN_PENDING
+            service.storage.save_audit(user_id, record)
+            await release_inflight(audit_id)
+            return {"status": "error", "message": f"invoke failed: {exc}"}
+
+        # NOTE: do not log `payload` — it contains base credentials + the HMAC secret.
+        logger.info("Launched SG audit scan %s for audit %s (lambda)", scan_id, audit_id)
+        return {"status": "launched", "scan_id": scan_id, "mode": "lambda"}
+
+    # --- Fallback: no collector Lambda configured — run in-process ----------
+    # Uses the same collector (`runner.run_collection`) the Lambda runs, in a
+    # background thread, so the audit works with just an AWS connection (no
+    # Lambda deploy). The frontend poller flips in_flight -> complete when the
+    # snapshot is persisted, identical to the Lambda async UX.
+    threading.Thread(
+        target=_run_inprocess_collection,
+        args=(user_id, audit_id, scan_id, scope, record.get("external_id", ""),
+              base_credentials, management_account_id),
+        name=f"sg-audit-{scan_id[:8]}",
+        daemon=True,
+    ).start()
+    logger.info("Launched SG audit scan %s for audit %s (in-process)", scan_id, audit_id)
+    return {"status": "launched", "scan_id": scan_id, "mode": "in_process"}
+
+
+def _run_inprocess_collection(
+    user_id, audit_id, scan_id, scope, external_id, base_credentials, management_account_id
+):
+    """Background-thread in-process collection (no collector Lambda configured).
+
+    Runs the same `runner.run_collection` the Lambda uses, then persists via the
+    shared `_store_and_advance` path. Owns its own event loop (the redis client
+    is a sync client wrapped with to_thread, so a fresh loop here is safe). On any
+    failure the audit is marked failed and the in-flight lock released.
+    """
+    service = SgAuditService()
     try:
-        client = lambda_client or _lambda_client()
-        client.invoke(
-            FunctionName=sg_config.SG_LAMBDA_ARN,
-            InvocationType="Event",  # async fire-and-forget
-            Payload=json.dumps(payload).encode("utf-8"),
-        )
-    except Exception as exc:
-        logger.warning("SG-audit Lambda invoke failed: %s", exc, exc_info=True)
-        record["scan_state"] = SCAN_PENDING
-        service.storage.save_audit(user_id, record)
-        await release_inflight(audit_id)
-        return {"status": "error", "message": f"invoke failed: {exc}"}
+        from sg_audit.collector_lambda.runner import run_collection
 
-    # NOTE: do not log `payload` — it contains base credentials + the HMAC secret.
-    logger.info("Launched SG audit scan %s for audit %s", scan_id, audit_id)
-    return {"status": "launched", "scan_id": scan_id}
+        snapshot = run_collection(
+            scan_id=scan_id,
+            audit_id=audit_id,
+            scope=scope,
+            external_id=external_id,
+            base_credentials=base_credentials,
+            management_account_id=management_account_id,
+        )
+        snapshot["user_id"] = user_id
+        asyncio.run(_store_and_advance(service, user_id, audit_id, snapshot))
+    except Exception:
+        logger.warning("In-process SG audit %s failed", scan_id, exc_info=True)
+        try:
+            record = service.get_audit(user_id, audit_id)
+            if record:
+                record["scan_state"] = SCAN_FAILED
+                record["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                service.storage.save_audit(user_id, record)
+        finally:
+            try:
+                asyncio.run(release_inflight(audit_id))
+            except Exception:
+                logger.debug("release_inflight after in-process failure failed", exc_info=True)
+
+
+async def _store_and_advance(service, user_id: str, audit_id: str, snapshot: dict) -> tuple[str, int]:
+    """Validate + persist a snapshot and advance the audit record.
+
+    Shared by the HMAC callback (Lambda path) and the in-process fallback. The
+    audit record is assumed to already exist (pre-written before launch).
+    Returns (scan_state, n_findings).
+    """
+    snapshot["findings"] = [f for f in (snapshot.get("findings") or []) if validate_finding(f)]
+    service.storage.save_snapshot(user_id, snapshot)
+
+    from sg_audit.scheduler import compute_next_scan_at
+
+    collector_status = snapshot.get("collector_status") or {}
+    base_err = str(collector_status.get("_base", "")).startswith("error")
+    failed = bool(snapshot.get("fatal")) or (base_err and not snapshot["findings"])
+
+    record = service.get_audit(user_id, audit_id) or {"audit_id": audit_id, "user_id": user_id}
+    record["scan_state"] = SCAN_FAILED if failed else SCAN_COMPLETE
+    record["latest_scan_id"] = snapshot.get("scan_id")
+    record["last_scan_at"] = snapshot.get("scanned_at")
+    record["latest_risk_score"] = snapshot.get("risk_score", 0.0)
+    record["latest_posture_score"] = snapshot.get("posture_score", 0.0)
+    record["next_scan_at"] = compute_next_scan_at()
+    record["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    service.storage.save_audit(user_id, record)
+
+    fingerprint = scope_fingerprint(service.scope_of(record))
+    await record_fingerprint(audit_id, fingerprint)
+    await release_inflight(audit_id)
+
+    logger.info(
+        "Stored SG-audit snapshot %s (%d findings, state=%s)",
+        snapshot.get("scan_id"), len(snapshot["findings"]), record["scan_state"],
+    )
+    return record["scan_state"], len(snapshot["findings"])
 
 
 async def process_callback(
@@ -240,37 +339,5 @@ async def process_callback(
         await release_inflight(audit_id)
         return 404, {"status": "error", "message": "unknown audit"}
 
-    # Defense in depth: drop malformed findings before persisting.
-    snapshot["findings"] = [f for f in (snapshot.get("findings") or []) if validate_finding(f)]
-
-    service.storage.save_snapshot(user_id, snapshot)
-
-    from sg_audit.scheduler import compute_next_scan_at
-
-    collector_status = snapshot.get("collector_status") or {}
-    base_err = str(collector_status.get("_base", "")).startswith("error")
-    failed = bool(snapshot.get("fatal")) or (base_err and not snapshot["findings"])
-
-    record["scan_state"] = SCAN_FAILED if failed else SCAN_COMPLETE
-    record["latest_scan_id"] = scan_id
-    record["last_scan_at"] = snapshot.get("scanned_at")
-    record["latest_risk_score"] = snapshot.get("risk_score", 0.0)
-    record["latest_posture_score"] = snapshot.get("posture_score", 0.0)
-    record["next_scan_at"] = compute_next_scan_at()
-    record["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    service.storage.save_audit(user_id, record)
-
-    fingerprint = scope_fingerprint(service.scope_of(record))
-    await record_fingerprint(audit_id, fingerprint)
-    await release_inflight(audit_id)
-
-    logger.info(
-        "Stored SG-audit snapshot %s (%d findings, state=%s)",
-        scan_id, len(snapshot["findings"]), record["scan_state"],
-    )
-    return 200, {
-        "status": "success",
-        "scan_id": scan_id,
-        "findings": len(snapshot["findings"]),
-        "scan_state": record["scan_state"],
-    }
+    state, n = await _store_and_advance(service, user_id, audit_id, snapshot)
+    return 200, {"status": "success", "scan_id": scan_id, "findings": n, "scan_state": state}

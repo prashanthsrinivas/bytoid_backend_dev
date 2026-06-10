@@ -19,9 +19,10 @@ def _int(name: str, default: int) -> int:
 # ca-central-1); never hard-coded so deploys track the environment.
 AWS_REGION = os.getenv("AWS_REGION", "ca-central-1")
 
-# ARN (or name) of the deployed SG-audit collector Lambda. When unset, the app
-# runs in "collection-disabled" mode: audits can be registered but no scan is
-# launched (safe no-op rather than an error).
+# ARN (or name) of the deployed SG-audit collector Lambda. When unset (and no
+# HMAC secret), the app falls back to running collection IN-PROCESS using the
+# caller's AWS session — so the feature works with just an AWS connection, no
+# Lambda deploy. The Lambda is the preferred path (isolation + scale) once set.
 SG_LAMBDA_ARN = os.getenv("SG_LAMBDA_ARN", "")
 
 # Public HTTPS base the Lambda posts findings back to (e.g. https://api.bytoid.ai).
