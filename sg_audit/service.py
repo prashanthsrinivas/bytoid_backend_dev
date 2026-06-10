@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from utils.base_logger import get_logger
 from sg_audit import config as sg_config
-from sg_audit.schema import SCAN_PENDING
+from sg_audit.schema import DOMAINS, SCAN_PENDING
 from sg_audit.storage import SgAuditStorage
 
 logger = get_logger(__name__)
@@ -33,6 +33,14 @@ def _clean_list(values) -> list[str]:
     return [str(v).strip() for v in values if str(v).strip()]
 
 
+def _clean_domains(values) -> list[str]:
+    """Keep only known domains; empty/None -> all domains."""
+    if not values:
+        return list(DOMAINS)
+    picked = [str(v).strip() for v in values if str(v).strip() in DOMAINS]
+    return picked or list(DOMAINS)
+
+
 class SgAuditService:
     def __init__(self, storage: SgAuditStorage | None = None):
         self.storage = storage or SgAuditStorage()
@@ -48,6 +56,7 @@ class SgAuditService:
         role_name: str | None = None,
         external_id: str | None = None,
         discover: bool | None = None,
+        domains: list[str] | None = None,
     ) -> dict:
         """Create + persist an audit record (S3). Returns the record.
 
@@ -60,11 +69,12 @@ class SgAuditService:
         record = {
             "audit_id": audit_id,
             "user_id": user_id,
-            "name": (name or "").strip() or "AWS Security Group Audit",
+            "name": (name or "").strip() or "Cloud Security Posture Audit",
             "account_ids": accounts,
             "regions": _clean_list(regions),
             "role_name": (role_name or "").strip() or sg_config.SG_DEFAULT_AUDIT_ROLE_NAME,
             "external_id": (external_id or "").strip() or uuid.uuid4().hex,
+            "domains": _clean_domains(domains),
             # Discover via organizations:ListAccounts unless an explicit list is given.
             "discover": (not accounts) if discover is None else bool(discover),
             "scan_state": SCAN_PENDING,
@@ -105,6 +115,7 @@ class SgAuditService:
         role_name: str | None = None,
         external_id: str | None = None,
         discover: bool | None = None,
+        domains: list[str] | None = None,
     ) -> dict | None:
         """Update an audit's scope. Returns the updated record, or None."""
         record = self.storage.get_audit(user_id, audit_id)
@@ -116,6 +127,8 @@ class SgAuditService:
             record["account_ids"] = _clean_list(account_ids)
         if regions is not None:
             record["regions"] = _clean_list(regions)
+        if domains is not None:
+            record["domains"] = _clean_domains(domains)
         if role_name is not None and role_name.strip():
             record["role_name"] = role_name.strip()
         if external_id is not None and external_id.strip():
@@ -136,6 +149,7 @@ class SgAuditService:
             "regions": record.get("regions") or [],
             "role_name": record.get("role_name") or sg_config.SG_DEFAULT_AUDIT_ROLE_NAME,
             "discover": bool(record.get("discover")),
+            "domains": _clean_domains(record.get("domains")),
         }
 
     def ready_for_collection(self, record: dict) -> bool:

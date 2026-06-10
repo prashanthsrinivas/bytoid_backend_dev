@@ -149,6 +149,12 @@ PERMISSION_METADATA = {
         "type": "create",
         "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
     },
+    "sg_audit.remediation.request": {
+        "label": "Request Remediation Approval",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
+    },
 
     # ================= TRACKERS =================
     "trackers.table.view": {

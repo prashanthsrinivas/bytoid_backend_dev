@@ -26,6 +26,7 @@ PERMISSIONS = {
     "sg_audit.findings.read": "View Security Group Findings",
     "sg_audit.dashboard.read": "View Security Posture Dashboard",
     "sg_audit.recommend.generate": "Generate AI Tightening Recommendations",
+    "sg_audit.remediation.request": "Request Remediation Approval",
     # ================= TRACKERS =================
     "trackers.table.view": "View Trackers",
     "trackers.table.create": "Create Table",

@@ -66,7 +66,44 @@ SG_LLM_BUDGET_CHARS = _int("SG_LLM_BUDGET_CHARS", 60_000)
 # embedded in reports.
 SG_DASHBOARD_BASE_URL = os.getenv("SG_DASHBOARD_BASE_URL", "")
 
+# --- Auto-remediation (opt-in, OFF by default) -------------------------------
+# Executing AWS write-actions is high-risk, so it is disabled unless explicitly
+# enabled, defaults to dry-run, requires an approved remediation workflow, and
+# assumes a SEPARATE write-scoped role (never the read-only audit role).
+SG_AUTO_REMEDIATE_ENABLED = os.getenv("SG_AUTO_REMEDIATE_ENABLED", "").lower() in ("1", "true", "yes")
+SG_AUTO_REMEDIATE_DRY_RUN = os.getenv("SG_AUTO_REMEDIATE_DRY_RUN", "true").lower() not in ("0", "false", "no")
+SG_AUTO_REMEDIATE_ROLE_NAME = os.getenv("SG_AUTO_REMEDIATE_ROLE_NAME", "BytoidSecurityRemediationRole")
+
+
+# --- Source control (GitHub) integration — optional, env-driven --------------
+# When unset the `vcs` domain is a safe no-op (no repo posture collected). A
+# per-tenant GitHub App is a future enhancement; this mirrors how the module
+# gates its other optional integrations (Lambda/HMAC/Shodan).
+SG_GITHUB_TOKEN = os.getenv("SG_GITHUB_TOKEN", "")
+SG_GITHUB_ORG = os.getenv("SG_GITHUB_ORG", "")
+SG_GITHUB_API_URL = os.getenv("SG_GITHUB_API_URL", "https://api.github.com")
+SG_GITHUB_MAX_REPOS = _int("SG_GITHUB_MAX_REPOS", 200)
+
+# --- In-cluster Kubernetes scan — optional, off by default -------------------
+# EKS control-plane posture is always collected (the `containers` domain). The
+# in-cluster `k8s` domain (RBAC/pods/dashboards) requires reachable cluster
+# endpoints + RBAC for the auditor, so it is opt-in and best-effort.
+SG_K8S_SCAN_ENABLED = os.getenv("SG_K8S_SCAN_ENABLED", "").lower() in ("1", "true", "yes")
+
 
 def collection_enabled() -> bool:
     """True only when the Lambda + HMAC secret are both configured."""
     return bool(SG_LAMBDA_ARN and SG_HMAC_SECRET)
+
+
+def github_enabled() -> bool:
+    return bool(SG_GITHUB_TOKEN and SG_GITHUB_ORG)
+
+
+def k8s_scan_enabled() -> bool:
+    return bool(SG_K8S_SCAN_ENABLED)
+
+
+def auto_remediate_enabled() -> bool:
+    """True only when auto-remediation has been deliberately turned on."""
+    return bool(SG_AUTO_REMEDIATE_ENABLED)

@@ -28,12 +28,62 @@ SEVERITY_WEIGHTS = {
 # Effort ranking weight (lower effort surfaces first when severity ties).
 EFFORT_ORDER = ("low", "medium", "high")
 
+# --- Security domains --------------------------------------------------------
+# The Cloud Security Posture engine groups findings by domain. Security Groups
+# is one domain (its rule engine in analysis/rules.py is unchanged); the others
+# are collected by modules under sg_audit/domains/.
+DOMAIN_SECURITY_GROUPS = "security_groups"
+DOMAIN_IAM = "iam"
+DOMAIN_NETWORK = "network"
+DOMAIN_DATA = "data"
+DOMAIN_COMPUTE = "compute"
+DOMAIN_LOGGING = "logging"
+DOMAIN_DEVOPS = "devops"          # Phase 2: CI/CD & DevOps (AWS-native)
+DOMAIN_CONTAINERS = "containers"  # Phase 2: Kubernetes / EKS (control plane)
+DOMAIN_EXTERNAL = "external"      # Phase 2: external attack surface
+DOMAIN_VCS = "vcs"                # Phase 3: source control / CI (GitHub)
+DOMAIN_K8S = "k8s"                # Phase 3: in-cluster Kubernetes (RBAC/pods)
+
+DOMAINS = (
+    DOMAIN_IAM,
+    DOMAIN_NETWORK,
+    DOMAIN_SECURITY_GROUPS,
+    DOMAIN_DATA,
+    DOMAIN_COMPUTE,
+    DOMAIN_LOGGING,
+    DOMAIN_DEVOPS,
+    DOMAIN_CONTAINERS,
+    DOMAIN_EXTERNAL,
+    DOMAIN_VCS,
+    DOMAIN_K8S,
+)
+
+DOMAIN_LABELS = {
+    DOMAIN_IAM: "Identity & Access",
+    DOMAIN_NETWORK: "Network Architecture",
+    DOMAIN_SECURITY_GROUPS: "Security Groups",
+    DOMAIN_DATA: "Data & Storage",
+    DOMAIN_COMPUTE: "Compute",
+    DOMAIN_LOGGING: "Logging & Monitoring",
+    DOMAIN_DEVOPS: "CI/CD & DevOps",
+    DOMAIN_CONTAINERS: "Containers (EKS)",
+    DOMAIN_EXTERNAL: "External Attack Surface",
+    DOMAIN_VCS: "Source Control (GitHub)",
+    DOMAIN_K8S: "Kubernetes Workloads",
+}
+
 # --- Finding categories ------------------------------------------------------
 CAT_NETWORK_EXPOSURE = "network_exposure"   # admin/service ports open to the internet
 CAT_DATA_EXPOSURE = "data_exposure"         # databases/caches open to the internet
 CAT_ACCESS_CONTROL = "access_control"       # overly broad ingress (internal or wide public)
 CAT_EGRESS = "egress"                       # overly broad egress
 CAT_HYGIENE = "hygiene"                     # unused SGs, default SG misuse, missing descriptions
+CAT_IDENTITY = "identity"                   # IAM users/roles/policies/MFA/credentials
+CAT_PUBLIC_ACCESS = "public_access"         # publicly reachable resources (S3/RDS/EC2)
+CAT_ENCRYPTION = "encryption"               # data-at-rest encryption gaps
+CAT_LOGGING = "logging"                     # audit/trail/flow-log gaps
+CAT_MONITORING = "monitoring"               # config recorder / retention gaps
+CAT_PATCH_MANAGEMENT = "patch_management"   # unmanaged/unpatched compute
 
 CATEGORIES = (
     CAT_NETWORK_EXPOSURE,
@@ -41,6 +91,12 @@ CATEGORIES = (
     CAT_ACCESS_CONTROL,
     CAT_EGRESS,
     CAT_HYGIENE,
+    CAT_IDENTITY,
+    CAT_PUBLIC_ACCESS,
+    CAT_ENCRYPTION,
+    CAT_LOGGING,
+    CAT_MONITORING,
+    CAT_PATCH_MANAGEMENT,
 )
 
 CATEGORY_LABELS = {
@@ -49,6 +105,12 @@ CATEGORY_LABELS = {
     CAT_ACCESS_CONTROL: "Access Control",
     CAT_EGRESS: "Egress",
     CAT_HYGIENE: "Hygiene",
+    CAT_IDENTITY: "Identity & Access",
+    CAT_PUBLIC_ACCESS: "Public Access",
+    CAT_ENCRYPTION: "Encryption",
+    CAT_LOGGING: "Logging",
+    CAT_MONITORING: "Monitoring",
+    CAT_PATCH_MANAGEMENT: "Patch Management",
 }
 
 # --- Audit lifecycle states (audit record `scan_state`) ----------------------

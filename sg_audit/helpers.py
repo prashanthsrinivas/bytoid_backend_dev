@@ -41,6 +41,7 @@ def scope_fingerprint(scope: dict) -> str:
         "regions": sorted(scope.get("regions") or []),
         "role_name": (scope.get("role_name") or "").strip(),
         "discover": bool(scope.get("discover")),
+        "domains": sorted(scope.get("domains") or []),
     }
     raw = json.dumps(norm, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

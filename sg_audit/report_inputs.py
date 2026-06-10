@@ -1,20 +1,17 @@
-"""Assemble the grounded, fully-traceable analysis inputs for an SG audit.
+"""Grounded, fully-traceable analysis inputs + executive report for an audit.
 
 Pure functions that turn a snapshot (+ prior snapshots) into the structured
-context the report's "Security Group Posture" section and the AI recommender
-consume: a posture rating, the key risk drivers, positive/negative signals, and
-a trend. Every driver carries its account/region/group_id/rule_id so conclusions
-are traceable back to a specific security group rule — the non-negotiable
-faithfulness requirement.
-
-No LLM call happens here; this prepares the recommender's grounded input.
+context the AI recommender consumes and into a multi-domain executive report.
+Every driver carries its account/region/entity/rule_id so conclusions are
+traceable back to a specific resource — the non-negotiable faithfulness
+requirement. No LLM call happens here.
 """
 
 from __future__ import annotations
 
+from sg_audit import metadata
 from sg_audit.schema import (
     CATEGORY_LABELS,
-    RULE_LABELS,
     SEV_CRITICAL,
     SEV_HIGH,
     SEV_MEDIUM,
@@ -29,22 +26,31 @@ def posture_rating(snapshot: dict) -> str:
     return rating_for(snapshot.get("risk_score", 0.0) or 0.0, has_critical=by_sev.get(SEV_CRITICAL, 0) > 0)
 
 
+def _entity_id(d: dict) -> str:
+    return d.get("entity_id") or d.get("group_id") or ""
+
+
+def _location(d: dict) -> str:
+    return f"{d.get('account_id', '')}/{d.get('region') or 'global'}/{_entity_id(d)}"
+
+
 def _driver(f: dict) -> dict:
     d = f.get("supporting_details", {}) or {}
+    rid = f.get("rule_id", "")
     return {
         "finding_id": f.get("finding_id", ""),
-        "rule_id": f.get("rule_id", ""),
-        "rule_label": RULE_LABELS.get(f.get("rule_id", ""), ""),
+        "rule_id": rid,
+        "rule_label": metadata.rule_label(rid),
         "severity": f.get("severity"),
         "summary": f.get("finding_summary", ""),
+        "domain": f.get("domain", ""),
         "category": f.get("category"),
         "category_label": CATEGORY_LABELS.get(f.get("category", ""), ""),
         "account_id": d.get("account_id", ""),
         "region": d.get("region", ""),
-        "group_id": d.get("group_id", ""),
-        "service": d.get("service", ""),
-        "cidr": d.get("cidr", ""),
-        "port": d.get("port"),
+        "entity_type": d.get("entity_type", ""),
+        "entity_id": _entity_id(d),
+        "location": _location(d),
     }
 
 
@@ -61,17 +67,19 @@ def negative_signals(snapshot: dict, limit: int = 10) -> list[dict]:
 
 
 def positive_signals(snapshot: dict) -> list[str]:
-    """Materially good posture signals derived from the absence of risk."""
+    """Materially good posture signals derived from the absence of key risks."""
     by_rule = (snapshot.get("counts") or {}).get("by_rule") or {}
     sig: list[str] = []
-    if not by_rule.get("SG_ADMIN_WORLD_INGRESS"):
+    if not by_rule.get("SG_ADMIN_WORLD_INGRESS") and not by_rule.get("EC2_OPEN_MGMT_PORT"):
         sig.append("No administrative ports (SSH/RDP) exposed to the internet")
-    if not by_rule.get("SG_DB_WORLD_INGRESS") and not by_rule.get("SG_CACHE_WORLD_INGRESS"):
-        sig.append("No databases or caches exposed to the internet")
-    if not by_rule.get("SG_ALL_PORTS_WORLD"):
-        sig.append("No security group opens all ports to the internet")
-    if not by_rule.get("SG_DEFAULT_SG_HAS_RULES"):
-        sig.append("Default security groups carry no CIDR-based rules")
+    if not by_rule.get("SG_DB_WORLD_INGRESS") and not by_rule.get("RDS_PUBLIC"):
+        sig.append("No databases exposed to the internet")
+    if not by_rule.get("S3_PUBLIC_ACL") and not by_rule.get("S3_PUBLIC_POLICY"):
+        sig.append("No publicly-readable S3 buckets detected")
+    if not by_rule.get("IAM_ROOT_NO_MFA") and not by_rule.get("IAM_ROOT_HAS_KEYS"):
+        sig.append("Root account has MFA and no active access keys")
+    if not by_rule.get("LOG_NO_CLOUDTRAIL"):
+        sig.append("CloudTrail logging is enabled")
     return sig
 
 
@@ -118,20 +126,16 @@ def build_analysis_context(snapshot: dict, prior_scores: list[float] | None = No
         "trend": trend(prior_scores, snapshot.get("risk_score", 0.0)),
         # Flat (finding -> location) list so every conclusion is traceable.
         "traceability": [
-            {
-                "finding_id": d["finding_id"],
-                "rule_id": d["rule_id"],
-                "location": f"{d['account_id']}/{d['region']}/{d['group_id']}",
-            }
+            {"finding_id": d["finding_id"], "rule_id": d["rule_id"], "location": d["location"]}
             for d in drivers
         ],
     }
 
 
 def render_context_markdown(context: dict) -> str:
-    """Render the context as a grounded markdown brief for the report/LLM."""
+    """Render the analysis context as a grounded markdown brief."""
     lines = [
-        f"## AWS Security Group Posture — {context.get('posture_rating', 'Unknown')}",
+        f"## AWS Cloud Security Posture — {context.get('posture_rating', 'Unknown')}",
         "",
         f"- **Posture score:** {context.get('posture_score')} / 100 "
         f"(risk score {context.get('risk_score')})",
@@ -145,10 +149,9 @@ def render_context_markdown(context: dict) -> str:
     if not drivers:
         lines.append("- No material (medium+) risk drivers identified.")
     for d in drivers:
-        loc = f"{d['account_id']}/{d['region']}/{d['group_id']}"
         lines.append(
             f"- **[{(d.get('severity') or '').upper()}]** {d.get('summary', '')} "
-            f"`({d.get('rule_id')} @ {loc})`"
+            f"`({d.get('rule_id')} @ {d.get('location')})`"
         )
 
     pos = context.get("positive_signals") or []
@@ -156,5 +159,68 @@ def render_context_markdown(context: dict) -> str:
         lines += ["", "### Positive Signals"]
         lines += [f"- {p}" for p in pos]
 
-    lines += ["", "_All conclusions above are traceable to the cited security group rules._"]
+    lines += ["", "_All conclusions above are traceable to the cited resources._"]
+    return "\n".join(lines)
+
+
+def build_report(snapshot: dict, record: dict | None = None, prior_scores: list[float] | None = None) -> str:
+    """Grounded multi-domain executive report (markdown) for the latest scan."""
+    from sg_audit.analysis import score
+    from sg_audit.compliance import all_frameworks
+
+    record = record or {}
+    gp = score.global_posture(snapshot)
+    by_sev = gp.get("by_severity", {})
+    name = record.get("name") or "Cloud Security Posture"
+    lines = [
+        f"# Cloud Security Posture Report — {name}",
+        "",
+        f"- **Overall posture:** {gp.get('rating')} ({round(gp.get('overall_posture_score', 0))}/100, "
+        f"risk {gp.get('overall_risk_score')})",
+        f"- **Findings:** {gp.get('total_findings', 0)} "
+        f"(critical {by_sev.get('critical', 0)}, high {by_sev.get('high', 0)}, "
+        f"medium {by_sev.get('medium', 0)}, low {by_sev.get('low', 0)})",
+        f"- **Trend:** {trend(prior_scores, snapshot.get('risk_score', 0.0)).get('direction')}",
+        f"- **Accounts scanned:** {len(gp.get('accounts_scanned') or [])}",
+        f"- **Last audit:** {snapshot.get('scanned_at')}",
+        "",
+        "## Risk by Domain",
+    ]
+    for dom in gp.get("risk_by_domain", []):
+        s = dom.get("by_severity", {})
+        lines.append(
+            f"- **{dom.get('label')}** — {dom.get('rating')} ({round(dom.get('posture_score', 0))}/100): "
+            f"C {s.get('critical', 0)} · H {s.get('high', 0)} · M {s.get('medium', 0)} · L {s.get('low', 0)}"
+        )
+    if not gp.get("risk_by_domain"):
+        lines.append("- No findings.")
+
+    lines += ["", "## Compliance Coverage"]
+    for cov in all_frameworks(snapshot):
+        lines.append(
+            f"- **{cov.get('framework_label', cov.get('framework'))}**: {cov.get('coverage_pct')}% "
+            f"({cov.get('passing')}/{cov.get('evaluated')} evaluated controls; {cov.get('failing')} failing)"
+        )
+
+    lines += ["", "## Top Risks"]
+    top = gp.get("top_10_critical", [])
+    if not top:
+        lines.append("- No critical/high risks identified.")
+    for t in top:
+        lines.append(
+            f"- **[{(t.get('severity') or '').upper()}]** {t.get('summary') or t.get('rule_label')} "
+            f"`({t.get('rule_id')} @ {t.get('account_id')}/{t.get('region') or 'global'}/{t.get('entity_id')})`"
+        )
+
+    lines += ["", "## Remediation Priority Queue (top 10)"]
+    for it in (gp.get("remediation_priority_queue", []) or [])[:10]:
+        lines.append(
+            f"{it.get('rank')}. **[{(it.get('severity') or '').upper()}]** {it.get('rule_label')} — "
+            f"{it.get('entity_name') or it.get('entity_id')} "
+            f"({it.get('account_id')}/{it.get('region') or 'global'}) · effort {it.get('effort')} · "
+            f"_{it.get('remediation')}_"
+        )
+
+    lines += ["", "_All findings are deterministic and trace to the cited resources; "
+              "no conclusion is extrapolated beyond the collected evidence._"]
     return "\n".join(lines)

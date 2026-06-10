@@ -40,8 +40,10 @@ _PACKAGE_FILES = [
     "sg_audit/__init__.py",
     "sg_audit/config.py",
     "sg_audit/schema.py",
+    "sg_audit/metadata.py",
     "sg_audit/signing.py",
     "sg_audit/analysis",  # whole analysis subpackage (normalize, rules, score)
+    "sg_audit/domains",   # multi-domain collectors (iam/network/data/compute/logging)
     "sg_audit/collector_lambda/__init__.py",
     "sg_audit/collector_lambda/handler.py",
     "sg_audit/collector_lambda/runner.py",

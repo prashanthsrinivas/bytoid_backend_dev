@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sg_audit import metadata
 from sg_audit.schema import (
     CATEGORIES,
+    DOMAIN_SECURITY_GROUPS,
     SEV_INFO,
     SEVERITY_ORDER,
     SEVERITY_WEIGHTS,
@@ -47,30 +49,84 @@ def make_finding(
     supporting_details: dict | None = None,
     evidence_type: str = "sg_rule",
     source: str = "ec2:DescribeSecurityGroups",
+    domain: str | None = None,
     collected_at: str | None = None,
 ) -> dict:
     """Build one validated, normalized finding record.
 
     Raises ``ValueError`` on an unknown category or severity so a malformed
-    analyzer fails loudly in tests rather than silently producing junk.
+    analyzer fails loudly in tests rather than silently producing junk. ``domain``
+    defaults from the rule metadata (Security Groups when unknown), so existing
+    SG findings are auto-tagged without changing the SG rule engine.
     """
     if category not in CATEGORIES:
         raise ValueError(f"Unknown category: {category!r}")
     if severity not in SEVERITY_ORDER:
         raise ValueError(f"Unknown severity: {severity!r}")
+    resolved_domain = domain or metadata.domain_for(rule_id, DOMAIN_SECURITY_GROUPS)
+    sd = dict(supporting_details or {})
+    # Backfill the standardized entity fields for SG findings (which carry
+    # group_id/group_name) so every domain exposes a consistent entity model.
+    if not sd.get("entity_id") and sd.get("group_id"):
+        sd.setdefault("entity_type", "security_group")
+        sd["entity_id"] = sd.get("group_id")
+        sd.setdefault("entity_name", sd.get("group_name", ""))
     return {
         "finding_id": str(finding_id),
+        "domain": resolved_domain,
         "category": category,
         "rule_id": str(rule_id),
         "evidence_type": str(evidence_type or "").strip(),
         "source": str(source or "").strip(),
         "finding_summary": str(finding_summary or "").strip(),
-        "supporting_details": supporting_details or {},
+        "supporting_details": sd,
         # risk_indicators carries the rule_id (parity with VRA's finding shape).
         "risk_indicators": [str(rule_id)],
         "severity": severity,
         "collected_at": collected_at or _utc_now_iso(),
     }
+
+
+def make_domain_finding(
+    *,
+    rule_id: str,
+    severity: str,
+    finding_summary: str,
+    account_id: str,
+    entity_type: str,
+    entity_id: str,
+    entity_name: str = "",
+    region: str = "",
+    source: str = "",
+    details: dict | None = None,
+) -> dict:
+    """Convenience builder for the non-SG domains.
+
+    Pulls domain + category from ``metadata.RULE_META`` so domain modules only
+    declare what they observe. Produces the same finding shape as ``make_finding``.
+    """
+    m = metadata.meta(rule_id)
+    sd = {
+        "account_id": account_id,
+        "region": region or "",
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "entity_name": entity_name or entity_id,
+        "rule_id": rule_id,
+        **(details or {}),
+    }
+    fid = f"{account_id}:{m.get('domain', '')}:{rule_id}:{entity_id}"
+    return make_finding(
+        finding_id=fid,
+        category=m.get("category", "hygiene"),
+        rule_id=rule_id,
+        severity=severity,
+        finding_summary=finding_summary,
+        supporting_details=sd,
+        evidence_type=f"{m.get('domain', 'posture')}_finding",
+        source=source or f"aws:{m.get('domain', '')}",
+        domain=m.get("domain"),
+    )
 
 
 def severity_counts(findings: list[dict]) -> dict:
@@ -98,6 +154,20 @@ def rule_counts(findings: list[dict]) -> dict:
         if rid:
             counts[rid] = counts.get(rid, 0) + 1
     return counts
+
+
+def domain_counts(findings: list[dict]) -> dict:
+    """Per-domain {total, by_severity} (only domains with findings present)."""
+    out: dict[str, dict] = {}
+    for f in findings:
+        dom = f.get("domain") or DOMAIN_SECURITY_GROUPS
+        if dom not in out:
+            out[dom] = {"total": 0, "by_severity": {sev: 0 for sev in SEVERITY_ORDER}}
+        out[dom]["total"] += 1
+        sev = f.get("severity", SEV_INFO)
+        if sev in out[dom]["by_severity"]:
+            out[dom]["by_severity"][sev] += 1
+    return out
 
 
 def risk_score(findings: list[dict]) -> float:
@@ -139,6 +209,7 @@ def build_snapshot(
             "by_severity": severity_counts(clean),
             "by_category": category_counts(clean),
             "by_rule": rule_counts(clean),
+            "by_domain": domain_counts(clean),
         },
         "risk_score": score,
         "posture_score": round(100.0 - score, 1),

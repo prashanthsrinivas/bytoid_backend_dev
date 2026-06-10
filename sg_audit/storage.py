@@ -63,6 +63,10 @@ def _rec_key(user_id: str, audit_id: str, scan_id: str) -> str:
     return f"{_posture_prefix(user_id, audit_id)}{scan_id}.rec.json"
 
 
+def _remediations_key(user_id: str, audit_id: str) -> str:
+    return f"{_audits_prefix(user_id)}{audit_id}.remediations.json"
+
+
 class SgAuditStorage:
     """Thin S3 persistence facade. Stateless aside from the KMS client."""
 
@@ -211,6 +215,16 @@ class SgAuditStorage:
 
     def get_recommendation(self, user_id: str, audit_id: str, scan_id: str) -> dict | None:
         return read_json_from_s3(_rec_key(user_id, audit_id, scan_id))
+
+    # -- remediation approval links (finding_id -> workflow) ------------------
+    def get_remediation_links(self, user_id: str, audit_id: str) -> dict:
+        return read_json_from_s3(_remediations_key(user_id, audit_id)) or {}
+
+    def save_remediation_link(self, user_id: str, audit_id: str, finding_id: str, link: dict) -> dict:
+        links = self.get_remediation_links(user_id, audit_id)
+        links[finding_id] = link
+        self._put_json(_remediations_key(user_id, audit_id), links)
+        return link
 
     # -- internals ------------------------------------------------------------
     def _hydrate(self, user_id: str, stored: dict) -> dict:

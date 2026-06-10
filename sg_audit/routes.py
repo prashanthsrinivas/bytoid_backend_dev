@@ -276,3 +276,156 @@ def sg_get_recommendations(audit_id):
         return jsonify({"status": "generating", "scan_id": scan_id})
     # insufficient_credits / blocked / error
     return jsonify({"status": status or "error", "message": rec.get("message"), "scan_id": scan_id})
+
+
+# ── Cloud Security Posture: global / per-domain / compliance ────────────────
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/global", methods=["GET"])
+@permission_required_body("sg_audit.dashboard.read")
+def sg_global(audit_id):
+    """Overall account posture: global score + risk-by-domain + top-10 + queue."""
+    from sg_audit.analysis import score
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    snapshot = SgAuditService().storage.get_latest_snapshot(user_id, audit_id)
+    if not snapshot:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    return jsonify({"status": "success", "global": score.global_posture(snapshot)})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/domain/<domain>", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_domain(audit_id, domain):
+    """Per-domain view: score + entity findings + top critical + priority queue."""
+    from sg_audit.analysis import score
+    from sg_audit.schema import DOMAIN_LABELS
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    snapshot = SgAuditService().storage.get_latest_snapshot(user_id, audit_id)
+    if not snapshot:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    findings = [f for f in (snapshot.get("findings") or []) if f.get("domain") == domain]
+    rows = score.per_domain(findings)
+    summary = rows[0] if rows else {"domain": domain, "label": DOMAIN_LABELS.get(domain, domain),
+                                    "risk_score": 0.0, "posture_score": 100.0, "rating": "Low",
+                                    "total": 0, "by_severity": {}}
+    return jsonify({
+        "status": "success",
+        "domain": domain,
+        "label": DOMAIN_LABELS.get(domain, domain),
+        "summary": summary,
+        "entities": score.per_entity(findings),
+        "top_critical": score.top_critical(findings, 10),
+        "priority_queue": score.remediation_priority_queue(findings, 50),
+        "findings": findings,
+    })
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/compliance", methods=["GET"])
+@permission_required_body("sg_audit.dashboard.read")
+def sg_compliance(audit_id):
+    """Coverage + family heatmap for the latest scan (CIS + SOC2 + ISO27001).
+
+    Pass ?framework=CIS|SOC2|ISO27001 for one; default returns all three.
+    """
+    from sg_audit.compliance import FRAMEWORKS, all_frameworks, coverage_for
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    snapshot = SgAuditService().storage.get_latest_snapshot(user_id, audit_id)
+    if not snapshot:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    fw = request.args.get("framework")
+    if fw in FRAMEWORKS:
+        return jsonify({"status": "success", "compliance": coverage_for(snapshot, fw)})
+    return jsonify({"status": "success", "frameworks": all_frameworks(snapshot)})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/report", methods=["GET"])
+@permission_required_body("sg_audit.dashboard.read")
+def sg_report(audit_id):
+    """Grounded multi-domain executive report (markdown) for the latest scan."""
+    from sg_audit.report_inputs import build_report
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    service = SgAuditService()
+    record = service.get_audit(user_id, audit_id)
+    if not record:
+        return jsonify({"status": "error", "message": "Not found"}), 404
+    storage = service.storage
+    snapshot = storage.get_latest_snapshot(user_id, audit_id)
+    if not snapshot:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    points = storage.trend(user_id, audit_id)
+    prior_scores = [p["risk_score"] for p in points[:-1]]
+    return jsonify({"status": "success", "markdown": build_report(snapshot, record, prior_scores)})
+
+
+# ── Remediation approval routing (reuses workflow_route) ────────────────────
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/remediation", methods=["POST"])
+@permission_required_body("sg_audit.remediation.request")
+def sg_request_remediation(audit_id, finding_id):
+    """Open an approval workflow for one finding (workflow_route)."""
+    from sg_audit.remediation import request_remediation
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    snapshot = SgAuditService().storage.get_latest_snapshot(user_id, audit_id)
+    if not snapshot:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    finding = next((f for f in (snapshot.get("findings") or []) if f.get("finding_id") == finding_id), None)
+    if not finding:
+        return jsonify({"status": "error", "message": "Finding not found"}), 404
+    result = request_remediation(user_id, audit_id, finding)
+    code = {"created": 201, "exists": 200, "no_org": 409, "not_found": 404, "error": 502}.get(
+        result.get("status"), 200
+    )
+    return jsonify(result), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/remediate", methods=["POST"])
+@permission_required_body("sg_audit.remediation.request")
+def sg_execute_remediation(audit_id, finding_id):
+    """Execute (or, by default, dry-run) an approved fix. Gated + opt-in.
+
+    Requires SG_AUTO_REMEDIATE_ENABLED, an approved remediation workflow, and an
+    explicit body ``{"dry_run": false}`` to perform a real AWS write.
+    """
+    from sg_audit.autoremediate import execute_remediation
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    snapshot = SgAuditService().storage.get_latest_snapshot(user_id, audit_id)
+    if not snapshot:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    finding = next((f for f in (snapshot.get("findings") or []) if f.get("finding_id") == finding_id), None)
+    if not finding:
+        return jsonify({"status": "error", "message": "Finding not found"}), 404
+    body = request.get_json(silent=True) or {}
+    dry_run = body.get("dry_run", True)  # default to dry-run
+    result = execute_remediation(user_id, audit_id, finding, dry_run=bool(dry_run))
+    code = {"executed": 200, "planned": 200, "disabled": 409, "not_approved": 409,
+            "unsupported": 422, "error": 502}.get(result.get("status"), 200)
+    return jsonify(result), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/remediations", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_list_remediations(audit_id):
+    """All remediation approval links for an audit, with live workflow state."""
+    from sg_audit.remediation import list_remediations
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    return jsonify({"status": "success", "remediations": list_remediations(user_id, audit_id)})

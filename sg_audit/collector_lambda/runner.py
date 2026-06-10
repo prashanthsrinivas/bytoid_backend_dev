@@ -14,6 +14,8 @@ from botocore.exceptions import ClientError
 
 from sg_audit.analysis.normalize import build_snapshot
 from sg_audit.analysis.rules import analyze_account_region
+from sg_audit.domains import DOMAIN_COLLECTORS
+from sg_audit.schema import DOMAIN_SECURITY_GROUPS, DOMAINS
 
 # Adaptive retries soak up EC2 Describe throttling when fanning across regions.
 _BOTO_CFG = Config(retries={"max_attempts": 5, "mode": "adaptive"})
@@ -121,9 +123,22 @@ def run_collection(
     scope = scope or {}
     role_name = scope.get("role_name") or "BytoidSecurityAuditRole"
     regions_filter = scope.get("regions") or []
+    enabled_domains = scope.get("domains") or list(DOMAINS)
     base_region = base_credentials.get("region") or "us-east-1"
 
     session = _base_session(base_credentials)
+
+    # --- Global (org-wide) domains run ONCE, independent of AWS accounts ------
+    # e.g. GitHub source-control posture is org-global, not per AWS account.
+    for domain in enabled_domains:
+        module = DOMAIN_COLLECTORS.get(domain)
+        if module is None or getattr(module, "SCOPE", "region") != "global":
+            continue
+        try:
+            findings += module.collect(session, "", "", base_region, regions_filter or None)
+            collector_status[f"_global:{domain}"] = "ok"
+        except Exception as exc:
+            collector_status[f"_global:{domain}"] = _err(exc)
 
     # --- Resolve target accounts --------------------------------------------
     name_by_id: dict[str, str] = {}
@@ -147,10 +162,11 @@ def run_collection(
         if "_discovery" not in collector_status:
             collector_status["_discovery"] = "error: no_accounts"
         snapshot = build_snapshot(
-            scan_id=scan_id, audit_id=audit_id, findings=[],
+            scan_id=scan_id, audit_id=audit_id, findings=findings,
             accounts_scanned=[], collector_status=collector_status, scope=scope,
         )
-        snapshot["fatal"] = True
+        # Only fatal if nothing at all was collected (global domains may have run).
+        snapshot["fatal"] = not findings
         return snapshot
 
     # --- Per-account fan-out -------------------------------------------------
@@ -178,23 +194,46 @@ def run_collection(
         account_name = name_by_id.get(account_id, "")
         account_ok = False
 
-        for region in regions:
-            try:
-                sgs = _describe_security_groups(acct_session, region)
-                eni_usage = _describe_eni_usage(acct_session, region)
-                findings += analyze_account_region(
-                    account_id=account_id,
-                    account_name=account_name,
-                    region=region,
-                    security_groups=sgs,
-                    eni_sg_usage=eni_usage,
-                )
-                collector_status[f"{account_id}:{region}"] = "ok"
-                account_ok = True
-            except Exception as exc:
-                collector_status[f"{account_id}:{region}"] = _err(exc)
+        for domain in enabled_domains:
+            # Security Groups keeps its existing engine, unchanged.
+            if domain == DOMAIN_SECURITY_GROUPS:
+                for region in regions:
+                    try:
+                        sgs = _describe_security_groups(acct_session, region)
+                        eni_usage = _describe_eni_usage(acct_session, region)
+                        findings += analyze_account_region(
+                            account_id=account_id, account_name=account_name, region=region,
+                            security_groups=sgs, eni_sg_usage=eni_usage,
+                        )
+                        collector_status[f"{account_id}:{region}:{domain}"] = "ok"
+                        account_ok = True
+                    except Exception as exc:
+                        collector_status[f"{account_id}:{region}:{domain}"] = _err(exc)
+                continue
 
-        collector_status[account_id] = "ok" if account_ok else "error: no_regions"
+            module = DOMAIN_COLLECTORS.get(domain)
+            if module is None:
+                continue
+            if getattr(module, "SCOPE", "region") == "global":
+                continue  # already collected once, outside the per-account loop
+            if getattr(module, "SCOPE", "region") == "account":
+                # Collected once per account (the module sweeps regions itself).
+                try:
+                    findings += module.collect(acct_session, account_id, account_name, base_region, regions)
+                    collector_status[f"{account_id}:_:{domain}"] = "ok"
+                    account_ok = True
+                except Exception as exc:
+                    collector_status[f"{account_id}:_:{domain}"] = _err(exc)
+            else:
+                for region in regions:
+                    try:
+                        findings += module.collect(acct_session, account_id, account_name, region, regions)
+                        collector_status[f"{account_id}:{region}:{domain}"] = "ok"
+                        account_ok = True
+                    except Exception as exc:
+                        collector_status[f"{account_id}:{region}:{domain}"] = _err(exc)
+
+        collector_status[account_id] = "ok" if account_ok else "error: no_data"
         if account_ok:
             accounts_scanned.append(account_id)
 

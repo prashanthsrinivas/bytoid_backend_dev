@@ -9,10 +9,14 @@ from __future__ import annotations
 
 from sg_audit.analysis.score import (
     executive_rollup,
+    global_posture,
     per_account,
+    per_domain,
+    per_entity,
     per_region,
     per_security_group,
 )
+from sg_audit.compliance import all_frameworks, compliance_coverage
 from sg_audit.config import SG_DASHBOARD_BASE_URL
 from sg_audit.report_inputs import build_analysis_context
 from sg_audit.schema import SEVERITY_ORDER
@@ -86,10 +90,16 @@ def build_dashboard(
             "by_category": exec_roll["by_category"],
             "by_rule": exec_roll["by_rule"],
         },
+        # ---- Global (cross-domain) posture ----
+        "global": global_posture(snapshot),
+        "per_domain": per_domain(findings),
+        "compliance": compliance_coverage(snapshot),
+        "compliance_frameworks": all_frameworks(snapshot),
         # ---- Drill-downs ----
         "per_account": per_account(findings, collector_status),
         "per_region": per_region(findings),
         "per_security_group": per_security_group(findings),
+        "per_entity": per_entity(findings),
         # ---- Partial-scan transparency ----
         "collector_status": collector_status,
         "analysis": build_analysis_context(snapshot, prior_scores),
