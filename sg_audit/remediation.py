@@ -1,10 +1,11 @@
 """Per-finding remediation approval routing (reuses workflow_route).
 
 A finding can be routed for approval as a ``posture_remediation`` document in the
-existing, generic approval engine (``workflow_route.state_machine``). We create a
-draft ``document_workflow`` row, persist the finding->workflow link in S3, and let
-the user advance/assign it via the existing Reviews & Approvals UI. No AWS write
-actions are performed — this tracks the approval, not the execution.
+existing, generic approval engine (``workflow_route.state_machine``). We create
+the ``document_workflow`` assigned to the org admin/owner and SUBMIT it into the
+review pipeline, so it lands in the admin's Reviews & Approvals inbox (rather than
+sitting in an unassigned draft). The finding->workflow link is persisted in S3. No
+AWS write actions are performed — this tracks the approval, not the execution.
 """
 
 from __future__ import annotations
@@ -21,6 +22,56 @@ _DOC_TYPE = "posture_remediation"
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _resolve_org_admin(user_id: str) -> tuple[str | None, str | None]:
+    """Resolve the org admin/owner (user_id, email) to route an approval to.
+
+    org_id is ``launch:{admin_user_id}`` for an admin-root org, or a company name.
+    Falls back to the requester when they are themselves an admin.
+    """
+    import pymysql
+
+    from db.rds_db import connect_to_rds
+    from workflow_route.state_machine import get_user_org_id
+
+    org_id = get_user_org_id(user_id)
+    conn = None
+    try:
+        conn = connect_to_rds()
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            def _email(uid):
+                cur.execute("SELECT email FROM users WHERE user_id=%s AND user_type='admin'", (uid,))
+                r = cur.fetchone()
+                return r["email"] if r else None
+
+            # launch:{admin_user_id} — the suffix is the org-root admin.
+            if org_id and org_id.startswith("launch:"):
+                cand = org_id.split(":", 1)[1]
+                em = _email(cand)
+                if em is not None:
+                    return cand, em
+            elif org_id:
+                cur.execute(
+                    "SELECT user_id, email FROM users WHERE company_name=%s AND user_type='admin' "
+                    "ORDER BY user_id LIMIT 1",
+                    (org_id,),
+                )
+                r = cur.fetchone()
+                if r:
+                    return r["user_id"], r["email"]
+
+            # Fallback: the requester themselves, if an admin.
+            cur.execute("SELECT email FROM users WHERE user_id=%s AND user_type='admin'", (user_id,))
+            r = cur.fetchone()
+            if r:
+                return user_id, r["email"]
+    except Exception:
+        logger.warning("resolve org admin failed", exc_info=True)
+    finally:
+        if conn:
+            conn.close()
+    return None, None
 
 
 def request_remediation(user_id: str, audit_id: str, finding: dict, *, service=None) -> dict:
@@ -49,26 +100,51 @@ def request_remediation(user_id: str, audit_id: str, finding: dict, *, service=N
         "workflow_id": None,
         "state": "requested",
         "doc_type": _DOC_TYPE,
+        "approver": None,
+        "approver_email": None,
     }
 
     try:
-        from workflow_route.state_machine import create_workflow, get_user_org_id
+        from workflow_route.state_machine import create_workflow, get_user_org_id, transition
 
         org_id = get_user_org_id(user_id)
         if not org_id:
             service.storage.save_remediation_link(user_id, audit_id, finding_id, link)
             return {"status": "no_org", **link}
 
+        approver, approver_email = _resolve_org_admin(user_id)
+        approver = approver or user_id  # last-resort: the requester
+        link["org_id"] = org_id
+        link["approver"] = approver
+        link["approver_email"] = approver_email
+
+        # Create assigned to the admin across all stages so wherever it lands it is owned.
         wf = create_workflow(
             org_id=org_id,
             doc_type=_DOC_TYPE,
             doc_id=finding_id,
             doc_version="1",
             owner_user_id=user_id,
+            quality_reviewer_user_id=approver,
+            governance_reviewer_user_id=approver,
+            approver_user_id=approver,
         )
         link["workflow_id"] = wf.get("workflow_id")
-        link["org_id"] = org_id
         link["state"] = wf.get("state", "draft")
+
+        # Submit it into the pipeline so it surfaces in the admin's inbox (not an
+        # orphaned draft). Best-effort: a permission/config gap leaves it at draft
+        # assigned to the admin rather than failing the request.
+        try:
+            updated = transition(
+                wf["workflow_id"], wf.get("state_version", 1), "quality_review",
+                actor_user_id=user_id, comment="Submitted for remediation approval",
+                quality_reviewer_user_id=approver,
+                governance_reviewer_user_id=approver, approver_user_id=approver,
+            )
+            link["state"] = updated.get("state", "quality_review")
+        except Exception as exc:
+            logger.warning("remediation submit left workflow at draft: %s", exc)
     except Exception as exc:
         logger.warning("SG-audit remediation workflow creation failed: %s", exc, exc_info=True)
         link["error"] = str(exc)
@@ -76,7 +152,8 @@ def request_remediation(user_id: str, audit_id: str, finding: dict, *, service=N
         return {"status": "error", **link}
 
     service.storage.save_remediation_link(user_id, audit_id, finding_id, link)
-    logger.info("Opened remediation workflow %s for finding %s", link["workflow_id"], finding_id)
+    logger.info("Routed remediation workflow %s for finding %s to %s (state=%s)",
+                link["workflow_id"], finding_id, approver, link["state"])
     return {"status": "created", **link}
 
 
