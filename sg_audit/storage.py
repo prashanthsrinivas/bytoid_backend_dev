@@ -59,6 +59,10 @@ def _index_key(user_id: str, audit_id: str) -> str:
     return f"{_posture_prefix(user_id, audit_id)}{_INDEX_NAME}"
 
 
+def _rec_key(user_id: str, audit_id: str, scan_id: str) -> str:
+    return f"{_posture_prefix(user_id, audit_id)}{scan_id}.rec.json"
+
+
 class SgAuditStorage:
     """Thin S3 persistence facade. Stateless aside from the KMS client."""
 
@@ -197,6 +201,16 @@ class SgAuditStorage:
         for e in stale:
             self.delete_snapshot(user_id, audit_id, e["scan_id"])
         return len(stale)
+
+    # -- AI recommendation artifact (per scan) --------------------------------
+    def save_recommendation(self, user_id: str, audit_id: str, scan_id: str, rec: dict) -> dict:
+        """Persist the AI tightening recommendation for a scan (clear JSON —
+        remediation guidance referencing already-client-visible group ids)."""
+        self._put_json(_rec_key(user_id, audit_id, scan_id), rec)
+        return rec
+
+    def get_recommendation(self, user_id: str, audit_id: str, scan_id: str) -> dict | None:
+        return read_json_from_s3(_rec_key(user_id, audit_id, scan_id))
 
     # -- internals ------------------------------------------------------------
     def _hydrate(self, user_id: str, stored: dict) -> dict:

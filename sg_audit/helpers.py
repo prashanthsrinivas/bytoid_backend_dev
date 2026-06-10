@@ -19,6 +19,11 @@ logger = get_logger(__name__)
 _INFLIGHT_PREFIX = "sg_audit:inflight:"        # audit currently being scanned
 _FINGERPRINT_PREFIX = "sg_audit:fingerprint:"  # last-scanned scope fingerprint
 _NONCE_PREFIX = "sg_audit:nonce:"              # seen callback nonces (replay guard)
+_REC_INFLIGHT_PREFIX = "sg_audit:rec_inflight:"  # AI recommendation being generated
+
+# A recommendation generation lock auto-expires so a crashed/slow Bedrock call
+# can't wedge regeneration.
+_REC_INFLIGHT_TTL_SECONDS = 60 * 10
 
 # An in-flight lock auto-expires so a crashed scan can't wedge an audit. Set
 # above the Lambda's max runtime so a still-running scan never double-fires.
@@ -74,6 +79,22 @@ async def record_fingerprint(audit_id: str, fingerprint: str) -> None:
         await redis.set(f"{_FINGERPRINT_PREFIX}{audit_id}", fingerprint)
     except Exception:
         logger.debug("record_fingerprint failed for %s", audit_id, exc_info=True)
+
+
+async def acquire_rec_inflight(key: str) -> bool:
+    """Claim the AI-recommendation generation slot for an (audit, scan). SET NX EX."""
+    redis = get_redis()
+    return await redis.set(
+        f"{_REC_INFLIGHT_PREFIX}{key}", "1", ex=_REC_INFLIGHT_TTL_SECONDS, nx=True
+    )
+
+
+async def release_rec_inflight(key: str) -> None:
+    redis = get_redis()
+    try:
+        await redis.delete(f"{_REC_INFLIGHT_PREFIX}{key}")
+    except Exception:
+        logger.debug("release_rec_inflight failed for %s", key, exc_info=True)
 
 
 async def consume_nonce(nonce: str, ttl_seconds: int) -> bool:

@@ -214,22 +214,65 @@ def sg_dashboard(audit_id):
 @sg_audit_bp.route("/sg-audit/audit/<audit_id>/recommend", methods=["POST"])
 @permission_required_body("sg_audit.recommend.generate")
 def sg_recommend(audit_id):
-    """On-demand grounded AI tightening recommendations for the latest snapshot."""
-    from sg_audit.recommend import generate_recommendations
+    """Launch on-demand grounded AI tightening recommendations (async + polled).
+
+    Bedrock generation can exceed the request timeout (API gateway 29s / gunicorn),
+    so this kicks off generation in the background and returns immediately; the
+    frontend polls GET /recommendations. Returns a ready result straight away if
+    one already exists for the latest scan (unless force).
+    """
+    from sg_audit.helpers import acquire_rec_inflight
+    from sg_audit.recommend import launch_generation
 
     _base, user_id = _user_id_from_request()
     if not user_id:
         return jsonify({"status": "error", "message": "Missing user_id"}), 400
     storage = SgAuditService().storage
-    scan_id = (request.get_json(silent=True) or {}).get("scan_id")
+    body = request.get_json(silent=True) or {}
+    scan_id = body.get("scan_id")
     snapshot = (
         storage.get_snapshot(user_id, audit_id, scan_id)
         if scan_id else storage.get_latest_snapshot(user_id, audit_id)
     )
     if not snapshot:
         return jsonify({"status": "error", "message": "No scan found"}), 404
-    result = _run_async(generate_recommendations(user_id, snapshot))
-    code = {"success": 200, "insufficient_credits": 402, "blocked": 422}.get(
-        result.get("status"), 200
-    )
-    return jsonify(result), code
+    scan_id = snapshot.get("scan_id")
+    force = bool(body.get("force"))
+
+    existing = storage.get_recommendation(user_id, audit_id, scan_id)
+    if existing and existing.get("status") == "success" and not force:
+        return jsonify({"status": "ready", "recommendation": existing, "scan_id": scan_id}), 200
+
+    # Single-flight: if a generation is already running for this scan, just report it.
+    if not _run_async(acquire_rec_inflight(f"{audit_id}:{scan_id}")):
+        return jsonify({"status": "generating", "scan_id": scan_id}), 202
+
+    storage.save_recommendation(user_id, audit_id, scan_id, {"status": "generating", "scan_id": scan_id})
+    launch_generation(user_id, audit_id, scan_id, snapshot)
+    return jsonify({"status": "generating", "scan_id": scan_id}), 202
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/recommendations", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_get_recommendations(audit_id):
+    """Poll the stored AI recommendation for the latest (or ?scan_id) scan."""
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    storage = SgAuditService().storage
+    scan_id = request.args.get("scan_id")
+    if not scan_id:
+        index = storage.list_snapshot_index(user_id, audit_id)
+        scan_id = index[0]["scan_id"] if index else None
+    if not scan_id:
+        return jsonify({"status": "none"})
+    rec = storage.get_recommendation(user_id, audit_id, scan_id)
+    if not rec:
+        return jsonify({"status": "none", "scan_id": scan_id})
+    status = rec.get("status")
+    if status == "success":
+        return jsonify({"status": "ready", "recommendation": rec, "scan_id": scan_id})
+    if status == "generating":
+        return jsonify({"status": "generating", "scan_id": scan_id})
+    # insufficient_credits / blocked / error
+    return jsonify({"status": status or "error", "message": rec.get("message"), "scan_id": scan_id})

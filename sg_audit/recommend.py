@@ -18,7 +18,10 @@ guardrails + the AI-credit gate + usage metering.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
+from datetime import datetime, timezone
 
 from utils.base_logger import get_logger
 from sg_audit import config as sg_config
@@ -248,3 +251,50 @@ async def generate_recommendations(user_id: str, snapshot: dict) -> dict:
         "findings_sent_to_ai": len(compact),
         "recommendations_dropped": dropped,
     }
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def generate_and_store(user_id: str, audit_id: str, scan_id: str, snapshot: dict, service=None) -> dict:
+    """Generate recommendations and persist them to S3 keyed by scan_id."""
+    from sg_audit.service import SgAuditService
+
+    service = service or SgAuditService()
+    result = await generate_recommendations(user_id, snapshot)
+    result["scan_id"] = scan_id
+    result["generated_at"] = _utc_now_iso()
+    service.storage.save_recommendation(user_id, audit_id, scan_id, result)
+    return result
+
+
+def launch_generation(user_id: str, audit_id: str, scan_id: str, snapshot: dict) -> None:
+    """Run recommendation generation in a background thread (Bedrock can exceed
+    the API-gateway/worker request timeout), persisting the result to S3 for the
+    frontend to poll. Releases the in-flight lock when done.
+    """
+    from sg_audit.helpers import release_rec_inflight
+
+    def _target():
+        try:
+            asyncio.run(generate_and_store(user_id, audit_id, scan_id, snapshot))
+        except Exception:
+            logger.warning("SG-audit recommendation generation failed for %s", scan_id, exc_info=True)
+            try:
+                from sg_audit.service import SgAuditService
+
+                SgAuditService().storage.save_recommendation(
+                    user_id, audit_id, scan_id,
+                    {"status": "error", "scan_id": scan_id,
+                     "message": "Recommendation generation failed.", "generated_at": _utc_now_iso()},
+                )
+            except Exception:
+                logger.debug("failed to persist recommendation error marker", exc_info=True)
+        finally:
+            try:
+                asyncio.run(release_rec_inflight(f"{audit_id}:{scan_id}"))
+            except Exception:
+                logger.debug("release_rec_inflight failed", exc_info=True)
+
+    threading.Thread(target=_target, name=f"sg-rec-{scan_id[:8]}", daemon=True).start()
