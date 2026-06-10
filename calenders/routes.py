@@ -147,7 +147,7 @@ def create_user_event():
         end_dt = parse_time(end_time_raw)
 
         # Create event
-        result = service.create_calender_event(
+        result = service.create_calendar_event(
             title=title,
             start_dt=start_dt,
             end_dt=end_dt,
