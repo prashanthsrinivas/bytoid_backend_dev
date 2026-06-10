@@ -21,6 +21,11 @@ PERMISSIONS = {
     "vra.assessment.create": "Create Vendor Risk Assessments",
     "vra.intelligence.read": "View Vendor Intelligence",
     "vra.dashboard.read": "View Vendor Intelligence Dashboard",
+    # ================= AWS SECURITY GROUP AUDIT =================
+    "sg_audit.audit.create": "Run Security Group Audits",
+    "sg_audit.findings.read": "View Security Group Findings",
+    "sg_audit.dashboard.read": "View Security Posture Dashboard",
+    "sg_audit.recommend.generate": "Generate AI Tightening Recommendations",
     # ================= TRACKERS =================
     "trackers.table.view": "View Trackers",
     "trackers.table.create": "Create Table",

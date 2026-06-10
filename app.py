@@ -57,6 +57,7 @@ from tests_routes.routes import tests_bp
 from ai_governance.routes import ai_governance_bp
 from assessment_chat.routes import assessment_chat_bp
 from vra.routes import vra_bp
+from sg_audit.routes import sg_audit_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -287,6 +288,7 @@ blueprints = [
     ai_governance_bp,
     assessment_chat_bp,
     vra_bp,
+    sg_audit_bp,
 ]
 
 for bp in blueprints:

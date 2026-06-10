@@ -119,6 +119,37 @@ PERMISSION_METADATA = {
         "dependencies": ["workspace.compliance_engine", "vra.intelligence.read"]
     },
 
+    # ================= AWS SECURITY GROUP AUDIT =================
+    # Multi-account Security Group posture auditing + AI tightening guidance.
+    # Registered here so resolve_permissions does not silently drop them. Gated by
+    # the compliance-engine workspace (same family as VRA); deliberately NOT
+    # depending on any aws.* key — none exist, and an unknown dependency would
+    # make resolve_permissions silently 403 everyone.
+    "sg_audit.audit.create": {
+        "label": "Run Security Group Audits",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine"]
+    },
+    "sg_audit.findings.read": {
+        "label": "View Security Group Findings",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine"]
+    },
+    "sg_audit.dashboard.read": {
+        "label": "View Security Posture Dashboard",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
+    },
+    "sg_audit.recommend.generate": {
+        "label": "Generate AI Tightening Recommendations",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
+    },
+
     # ================= TRACKERS =================
     "trackers.table.view": {
         "label": "View Trackers",

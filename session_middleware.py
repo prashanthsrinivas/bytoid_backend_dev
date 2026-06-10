@@ -39,6 +39,9 @@ EXEMPT_PATHS = [
     # VRA OSINT collector Lambda posts findings here; authenticated by its own
     # HMAC signature + nonce, not the user session.
     "/vra/osint/callback",
+    # SG-audit collector Lambda posts posture snapshots here; authenticated by its
+    # own HMAC signature + nonce, not the user session.
+    "/sg-audit/callback",
 ]
 
 

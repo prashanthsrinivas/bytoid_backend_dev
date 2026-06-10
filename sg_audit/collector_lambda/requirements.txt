@@ -1,0 +1,4 @@
+# Lambda-only runtime deps for the SG-audit collector.
+# boto3/botocore are already provided by the Lambda Python runtime; the collector
+# uses only those plus the stdlib, so no third-party packages are bundled. This
+# file exists so `pip install -r` in deploy.py is a no-op rather than an error.

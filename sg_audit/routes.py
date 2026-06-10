@@ -1,0 +1,235 @@
+"""SG-audit HTTP blueprint — all paths prefixed ``/sg-audit``.
+
+Caller identity follows the repo convention: ``user_id`` (body for writes, query
+for reads), parsed with ``parse_composite_user_id``. The HMAC-signed Lambda
+callback is the one unauthenticated route (it is in EXEMPT_PATHS and verifies its
+own signature). Mirrors the ``vra`` blueprint's structure.
+"""
+
+import asyncio
+
+from flask import Blueprint, jsonify, request
+
+from utils.base_logger import get_logger
+from utils.normal import parse_composite_user_id
+from utils.permission_required import permission_required_body
+from sg_audit import config as sg_config
+from sg_audit.service import SgAuditService
+
+sg_audit_bp = Blueprint("sg_audit", __name__)
+logger = get_logger(__name__)
+
+
+def _run_async(coro):
+    """Run an async coroutine from a sync (gunicorn) worker context."""
+    return asyncio.run(coro)
+
+
+def _user_id_from_request():
+    """Resolve the caller's user_id (body for writes, query for reads), parsed
+    with the repo's composite-id convention. Returns ``(base, user_id)``."""
+    base = None
+    if request.method in ("POST", "PUT", "DELETE"):
+        base = (request.get_json(silent=True) or {}).get("user_id")
+    if not base:
+        base = request.args.get("user_id")
+    if not base:
+        return None, None
+    _logged_in, user_id = parse_composite_user_id(base)
+    return base, user_id
+
+
+@sg_audit_bp.route("/sg-audit/health", methods=["GET"])
+def sg_health():
+    """Readiness probe: is automatic cross-account collection configured?"""
+    return jsonify({
+        "status": "ok",
+        "module": "sg_audit",
+        "collection_enabled": sg_config.collection_enabled(),
+        "region": sg_config.AWS_REGION,
+        "default_audit_role": sg_config.SG_DEFAULT_AUDIT_ROLE_NAME,
+        "rescan_cadence_days": sg_config.SG_RESCAN_CADENCE_DAYS,
+        "retention_days": sg_config.SG_RETENTION_DAYS,
+    })
+
+
+@sg_audit_bp.route("/sg-audit/audit", methods=["POST"])
+@permission_required_body("sg_audit.audit.create")
+def sg_create_audit():
+    """Register an audit (scope: accounts/regions/role). Generates an ExternalId."""
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    data = request.get_json(silent=True) or {}
+    record = SgAuditService().create_audit(
+        user_id,
+        name=data.get("name", ""),
+        account_ids=data.get("account_ids"),
+        regions=data.get("regions"),
+        role_name=data.get("role_name"),
+        external_id=data.get("external_id"),
+        discover=data.get("discover"),
+    )
+    return jsonify({"status": "success", "audit": record}), 201
+
+
+@sg_audit_bp.route("/sg-audit/audits", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_list_audits():
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    return jsonify({"status": "success", "audits": SgAuditService().list_audits(user_id)})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_get_audit(audit_id):
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    record = SgAuditService().get_audit(user_id, audit_id)
+    if not record:
+        return jsonify({"status": "error", "message": "Not found"}), 404
+    return jsonify({"status": "success", "audit": record})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/targets", methods=["POST"])
+@permission_required_body("sg_audit.audit.create")
+def sg_set_targets(audit_id):
+    """Update audit scope (accounts/regions/role/externalId)."""
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    data = request.get_json(silent=True) or {}
+    record = SgAuditService().set_targets(
+        user_id,
+        audit_id,
+        name=data.get("name"),
+        account_ids=data.get("account_ids"),
+        regions=data.get("regions"),
+        role_name=data.get("role_name"),
+        external_id=data.get("external_id"),
+        discover=data.get("discover"),
+    )
+    if not record:
+        return jsonify({"status": "error", "message": "Not found"}), 404
+    return jsonify({"status": "success", "audit": record})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>", methods=["DELETE"])
+@permission_required_body("sg_audit.audit.create")
+def sg_delete_audit(audit_id):
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    if not SgAuditService().delete_audit(user_id, audit_id):
+        return jsonify({"status": "error", "message": "Not found"}), 404
+    return jsonify({"status": "success", "deleted": audit_id})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/collect", methods=["POST"])
+@permission_required_body("sg_audit.audit.create")
+def sg_collect(audit_id):
+    """Launch a cross-account SG audit scan (async Lambda) for the audit."""
+    from sg_audit.collect import trigger_collection
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    force = bool((request.get_json(silent=True) or {}).get("force"))
+    result = _run_async(trigger_collection(user_id, audit_id, force=force))
+    status = result.get("status")
+    if status in ("launched", "unchanged", "already_running"):
+        code = 200
+    elif status in ("no_session", "session_expiring", "disabled", "skipped"):
+        code = 409
+    elif status == "error":
+        code = 400
+    else:
+        code = 202
+    return jsonify(result), code
+
+
+@sg_audit_bp.route("/sg-audit/callback", methods=["POST"])
+def sg_callback():
+    """Receive an HMAC-signed posture snapshot from the collector Lambda.
+
+    Authenticated by signature + timestamp + nonce (NOT a user session — it is in
+    EXEMPT_PATHS). Verification/persistence lives in ``process_callback``.
+    """
+    from sg_audit.collect import process_callback
+
+    raw_body = request.get_data(cache=False) or b""
+    status_code, body = _run_async(process_callback(raw_body, dict(request.headers)))
+    return jsonify(body), status_code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/findings", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_findings(audit_id):
+    """Findings for the latest (or ?scan_id) posture snapshot."""
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    storage = SgAuditService().storage
+    scan_id = request.args.get("scan_id")
+    snapshot = (
+        storage.get_snapshot(user_id, audit_id, scan_id)
+        if scan_id else storage.get_latest_snapshot(user_id, audit_id)
+    )
+    if not snapshot:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    return jsonify({
+        "status": "success",
+        "scan_id": snapshot.get("scan_id"),
+        "scanned_at": snapshot.get("scanned_at"),
+        "counts": snapshot.get("counts", {}),
+        "collector_status": snapshot.get("collector_status", {}),
+        "findings": snapshot.get("findings", []),
+    })
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/dashboard", methods=["GET"])
+@permission_required_body("sg_audit.dashboard.read")
+def sg_dashboard(audit_id):
+    """Full Security Posture Dashboard model (executive + drill-down)."""
+    from sg_audit.dashboard import build_dashboard
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    service = SgAuditService()
+    record = service.get_audit(user_id, audit_id)
+    if not record:
+        return jsonify({"status": "error", "message": "Not found"}), 404
+    storage = service.storage
+    snapshot = storage.get_latest_snapshot(user_id, audit_id)
+    points = storage.trend(user_id, audit_id)
+    prior_scores = [p["risk_score"] for p in points[:-1]]
+    dashboard = build_dashboard(record, snapshot, points, prior_scores=prior_scores)
+    return jsonify({"status": "success", "dashboard": dashboard})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/recommend", methods=["POST"])
+@permission_required_body("sg_audit.recommend.generate")
+def sg_recommend(audit_id):
+    """On-demand grounded AI tightening recommendations for the latest snapshot."""
+    from sg_audit.recommend import generate_recommendations
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    storage = SgAuditService().storage
+    scan_id = (request.get_json(silent=True) or {}).get("scan_id")
+    snapshot = (
+        storage.get_snapshot(user_id, audit_id, scan_id)
+        if scan_id else storage.get_latest_snapshot(user_id, audit_id)
+    )
+    if not snapshot:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    result = _run_async(generate_recommendations(user_id, snapshot))
+    code = {"success": 200, "insufficient_credits": 402, "blocked": 422}.get(
+        result.get("status"), 200
+    )
+    return jsonify(result), code
