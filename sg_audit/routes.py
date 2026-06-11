@@ -79,7 +79,13 @@ def sg_list_audits():
     _base, user_id = _user_id_from_request()
     if not user_id:
         return jsonify({"status": "error", "message": "Missing user_id"}), 400
-    return jsonify({"status": "success", "audits": SgAuditService().list_audits(user_id)})
+    try:
+        audits = SgAuditService().list_audits(user_id)
+    except Exception:
+        # Never surface a 5xx for the list view — degrade to empty.
+        logger.warning("sg_list_audits failed for %s", user_id, exc_info=True)
+        audits = []
+    return jsonify({"status": "success", "audits": audits})
 
 
 @sg_audit_bp.route("/sg-audit/audit/<audit_id>", methods=["GET"])
@@ -429,3 +435,126 @@ def sg_list_remediations(audit_id):
     if not user_id:
         return jsonify({"status": "error", "message": "Missing user_id"}), 400
     return jsonify({"status": "success", "remediations": list_remediations(user_id, audit_id)})
+
+
+# ── Reuse: tables → Trackers + runbook Responses & Evidence ─────────────────
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/evidence", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_table_evidence(audit_id):
+    """A table's rows as canonical Responses & Evidence records (?table=&framework=)."""
+    from sg_audit.exports import TABLES, load_and_build
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    table = request.args.get("table", "findings")
+    if table not in TABLES:
+        return jsonify({"status": "error", "message": f"Unknown table: {table}"}), 400
+    built = load_and_build(user_id, audit_id, table, request.args.get("framework"))
+    if built is None:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    records = built["evidence"]
+    return jsonify({"status": "success", "evidence": {
+        "table": table, "name": built["name"], "records": records,
+        "total_findings": len(records),
+    }})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/to-tracker", methods=["POST"])
+@permission_required_body("trackers.table.create")
+def sg_to_tracker(audit_id):
+    """Materialize a table into a standalone Tracker (mirrors /tracker/from-risk)."""
+    from tab_tracker.helper import (
+        _decrypt_tracker_data,
+        append_to_tracker,
+        check_config_exist,
+        create_empty_tracker_config,
+        create_tracker_config,
+        create_tracker_file,
+        save_tracker_file,
+    )
+    from utils.s3_utils import read_json_from_s3
+    from sg_audit.exports import TABLES, load_and_build
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body = request.get_json(silent=True) or {}
+    table = body.get("table", "findings")
+    if table not in TABLES:
+        return jsonify({"status": "error", "message": f"Unknown table: {table}"}), 400
+    built = load_and_build(user_id, audit_id, table, body.get("framework"))
+    if built is None:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+
+    name = (body.get("name") or "").strip() or f"{built['name']} — {audit_id[:6]}"
+    block_id = f"sg-audit-{audit_id}-{table}"
+    try:
+        config_path, config_data = check_config_exist(user_id)
+        if not config_data:
+            create_empty_tracker_config(user_id)
+            config_path, config_data = check_config_exist(user_id)
+        tracker_id, file_path = create_tracker_config(
+            config_path=config_path, user_id=user_id, name=name,
+            tracker_type="table", runbook_id=f"sg-audit:{audit_id}", block_id=block_id,
+        )
+        create_tracker_file(
+            user_id=user_id, tracker_id=tracker_id, tracker_type="table",
+            runbook_id=f"sg-audit:{audit_id}", block_config={"columns": built["columns"]},
+        )
+        tracker_data = read_json_from_s3(file_path)
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
+            block = {
+                "block_id": block_id, "block_title": name,
+                "headers": [c["name"] for c in built["columns"]], "rows": built["rows"],
+            }
+            append_to_tracker(tracker_data, block, block_id)
+            save_tracker_file(user_id, tracker_id, tracker_data)
+    except ValueError as ve:
+        return jsonify({"status": "error", "message": str(ve)}), 400
+    except Exception as exc:
+        logger.warning("sg_to_tracker failed: %s", exc, exc_info=True)
+        return jsonify({"status": "error", "message": str(exc)}), 502
+    return jsonify({"status": "success", "tracker_id": tracker_id, "name": name,
+                    "rows": len(built["rows"])}), 201
+
+
+@sg_audit_bp.route("/sg-audit/runbooks", methods=["GET"])
+@permission_required_body("compliance.runbook.read")
+def sg_runbooks():
+    """Runbooks the posture evidence can be pushed into (have a linked playbook)."""
+    from sg_audit.runbook_evidence import list_runbooks
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    return jsonify({"status": "success", "runbooks": _run_async(list_runbooks(user_id))})
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/push-to-runbook", methods=["POST"])
+@permission_required_body("compliance.runbook.edit")
+def sg_push_to_runbook(audit_id):
+    """Push a table's evidence into a chosen runbook's Responses & Evidence."""
+    from sg_audit.exports import TABLES, load_and_build
+    from sg_audit.runbook_evidence import push_evidence_to_runbook
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body = request.get_json(silent=True) or {}
+    runbook_id = body.get("runbook_id")
+    if not runbook_id:
+        return jsonify({"status": "error", "message": "Missing runbook_id"}), 400
+    table = body.get("table", "findings")
+    if table not in TABLES:
+        return jsonify({"status": "error", "message": f"Unknown table: {table}"}), 400
+    built = load_and_build(user_id, audit_id, table, body.get("framework"))
+    if built is None:
+        return jsonify({"status": "error", "message": "No scan found"}), 404
+    result = _run_async(push_evidence_to_runbook(user_id, runbook_id, built["evidence"], built["name"]))
+    code = {"queued": 200, "empty": 200, "not_found": 404, "not_linked": 409, "error": 502}.get(
+        result.get("status"), 200
+    )
+    return jsonify(result), code

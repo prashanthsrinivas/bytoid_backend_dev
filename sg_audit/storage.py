@@ -113,10 +113,14 @@ class SgAuditStorage:
     def list_audits(self, user_id: str) -> list[dict]:
         out = []
         for key in self._list_keys(_audits_prefix(user_id)):
-            if key.endswith(".json"):
-                rec = read_json_from_s3(key)
-                if rec:
-                    out.append(rec)
+            # Only real audit records: `{audit_id}.json`. Skip sibling artifacts
+            # that also live under the audits/ prefix (e.g. `.remediations.json`)
+            # and any file whose content is not a proper audit record.
+            if not key.endswith(".json") or key.endswith(".remediations.json"):
+                continue
+            rec = read_json_from_s3(key)
+            if isinstance(rec, dict) and rec.get("audit_id"):
+                out.append(rec)
         out.sort(key=lambda r: r.get("created_at", ""), reverse=True)
         return out
 

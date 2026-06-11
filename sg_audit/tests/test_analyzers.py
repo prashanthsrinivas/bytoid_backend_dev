@@ -182,11 +182,51 @@ def test_registry():
     ok(f["domain"] == "iam", "make_domain_finding tags domain")
 
 
+def test_exports():
+    from sg_audit import exports
+    findings = (iam.analyze_credential_report(
+        [{"user": "<root_account>", "mfa_active": "false", "access_key_1_active": "true",
+          "password_enabled": "false", "access_key_2_active": "false"}], A)
+        + data.analyze_bucket(A, "b", "us-east-1",
+            {"Grants": [{"Grantee": {"URI": "http://acs.amazonaws.com/groups/global/AllUsers"}, "Permission": "READ"}]},
+            None, None, None))
+    snap = build_snapshot(scan_id="s", audit_id="aud1", findings=findings, accounts_scanned=[A])
+    links = {"f1": {"summary": "x", "rule_label": "R", "approver_email": "a@b.io",
+                    "state": "draft", "requested_at": "2026-06-10T00:00:00Z"}}
+    for t in exports.TABLES:
+        fw = "CIS" if t == "compliance" else None
+        lk = links if t == "remediations" else None
+        built = exports.build_table(snap, t, framework=fw, remediation_links=lk)
+        ok(built and built["columns"] and isinstance(built["rows"], list)
+           and isinstance(built["evidence"], list), f"exports build {t}")
+        for e in built["evidence"]:
+            ok({"source", "evidence_type", "finding_summary", "severity", "supporting_details"} <= set(e),
+               f"evidence record shape {t}")
+    ok(exports.build_table(snap, "bogus") is None, "exports unknown table -> None")
+
+
+def test_list_audits_skips_siblings():
+    # Regression: the remediations sibling under audits/ must not appear as an audit.
+    import sg_audit.storage as st
+    files = {"u/sg_audit/audits/a.json": {"audit_id": "a", "name": "Real"},
+             "u/sg_audit/audits/a.remediations.json": {"f": {"workflow_id": "w"}}}
+    store = st.SgAuditStorage.__new__(st.SgAuditStorage)  # skip __init__/KMS
+    store._list_keys = lambda prefix: list(files)
+    orig = st.read_json_from_s3
+    st.read_json_from_s3 = lambda k: files.get(k)
+    try:
+        audits = store.list_audits("u")
+    finally:
+        st.read_json_from_s3 = orig
+    ok(len(audits) == 1 and audits[0]["audit_id"] == "a", "list_audits skips .remediations.json")
+
+
 def main():
     for fn in (test_security_groups, test_iam, test_network, test_data, test_compute, test_logging,
-               test_external_containers_devops, test_vcs_k8s, test_scoring_compliance_report, test_registry):
+               test_external_containers_devops, test_vcs_k8s, test_scoring_compliance_report, test_registry,
+               test_exports, test_list_audits_skips_siblings):
         fn()
-    print(f"OK — {_checks} assertions passed across 10 test groups")
+    print(f"OK — {_checks} assertions passed across 12 test groups")
 
 
 if __name__ == "__main__":
