@@ -213,7 +213,8 @@ def _build_scope_context_str(scope: dict, tracker_data: dict) -> str:
         return f"Selected cell: Row {elem.get('row_id')}, Column {elem.get('col_id')}, Current value: {elem.get('value')}"
     elif scope_type == "selected_row":
         row = scope.get("selected_row", {})
-        return f"Selected row ID: {row.get('row_id')}\nRow data: {json.dumps(row.get('data', {}))}"
+        row_values = row.get("values") or row.get("data", {})
+        return f"Selected row ID: {row.get('row_id')}\nRow data: {json.dumps(row_values)}"
     elif scope_type == "selected_column":
         col = scope.get("selected_column", {})
         return f"Selected column: {col.get('name')} (ID: {col.get('col_id')})"
@@ -270,6 +271,13 @@ def _build_truncated_tracker_str(tracker_data: dict, max_items: int = 20) -> str
     except Exception as e:
         logger.exception("Error truncating tracker: %s", e)
         return json.dumps({"error": "truncation_failed"})
+
+
+def _normalize_selected_column(col: dict) -> dict:
+    """Normalize column_id → col_id (clients may send either field name)."""
+    if "column_id" in col and "col_id" not in col:
+        return {**col, "col_id": col["column_id"]}
+    return col
 
 
 def _merge_scoped_changes(tracker_data: dict, scope: dict, ai_result: dict) -> dict:
@@ -2411,7 +2419,7 @@ async def _selected_column_worker(data, job_id=None, session_id=None):
     tracker_id = data.get("tracker_id")
     message = data.get("message")
     tracker_data = data.get("tracker_data")
-    selected_column = data.get("selected_column", {})
+    selected_column = _normalize_selected_column(data.get("selected_column", {}))
 
     logger.info(
         f"_selected_column_worker: job_id={job_id}, user={user_id}, tracker={tracker_id}, col_id={selected_column.get('col_id')}"
@@ -2643,7 +2651,9 @@ async def _selected_columns_worker(data, job_id=None, session_id=None):
     tracker_id = data.get("tracker_id")
     message = data.get("message")
     tracker_data = data.get("tracker_data")
-    selected_columns = data.get("selected_columns", [])
+    selected_columns = [
+        _normalize_selected_column(col) for col in data.get("selected_columns", [])
+    ]
 
     logger.info(
         f"_selected_columns_worker: job_id={job_id}, user={user_id}, tracker={tracker_id}, num_cols={len(selected_columns)}"
