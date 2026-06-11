@@ -88,38 +88,67 @@ class TestNormalizeSelectedColumn:
         assert col == {"name": "X"}
 
 
+def _column_scope():
+    return {
+        "type": "selected_column",
+        "selected_column": tr._normalize_selected_column(_frontend_selected_column()),
+    }
+
+
 class TestMergeSelectedColumn:
     def test_merge_writes_to_target_column(self):
-        scope = {
-            "type": "selected_column",
-            "selected_column": tr._normalize_selected_column(
-                _frontend_selected_column()
-            ),
-        }
         ai_result = [
             {"row_id": "r1", "new_value": "Confirmed"},
             {"row_id": "r2", "new_value": "Confirmed"},
         ]
-        merged = tr._merge_scoped_changes(_tracker_data(), scope, ai_result)
+        merged, applied = tr._merge_scoped_changes(
+            _tracker_data(), _column_scope(), ai_result
+        )
         by_id = {r["row_id"]: r for r in merged["rows"]}
+        assert applied == 2
         assert by_id["r1"]["values"]["col_7"] == "Confirmed"
         assert by_id["r2"]["values"]["col_7"] == "Confirmed"
         # Nothing leaked under a None key (the pre-fix failure mode).
         assert None not in by_id["r1"]["values"]
         assert None not in by_id["r2"]["values"]
 
-    def test_merge_ignores_unknown_rows(self):
-        scope = {
-            "type": "selected_column",
-            "selected_column": tr._normalize_selected_column(
-                _frontend_selected_column()
-            ),
-        }
-        merged = tr._merge_scoped_changes(
-            _tracker_data(), scope, [{"row_id": "ghost", "new_value": "x"}]
+    def test_merge_accepts_value_key_fallback(self):
+        # Models sometimes echo the input key "value" instead of "new_value";
+        # previously that wrote None into every row → "No diff detected".
+        ai_result = [{"row_id": "r1", "value": "Confirmed"}]
+        merged, applied = tr._merge_scoped_changes(
+            _tracker_data(), _column_scope(), ai_result
         )
+        by_id = {r["row_id"]: r for r in merged["rows"]}
+        assert applied == 1
+        assert by_id["r1"]["values"]["col_7"] == "Confirmed"
+
+    def test_merge_ignores_unknown_rows_and_reports_zero(self):
+        merged, applied = tr._merge_scoped_changes(
+            _tracker_data(), _column_scope(), [{"row_id": "ghost", "new_value": "x"}]
+        )
+        assert applied == 0
         for row in merged["rows"]:
             assert row["values"]["col_7"] == ""
+
+    def test_merge_counts_zero_when_values_unchanged(self):
+        # Model lazily echoing the current (empty) values is a no-op proposal.
+        ai_result = [
+            {"row_id": "r1", "new_value": ""},
+            {"row_id": "r2", "new_value": ""},
+        ]
+        _, applied = tr._merge_scoped_changes(
+            _tracker_data(), _column_scope(), ai_result
+        )
+        assert applied == 0
+
+    def test_merge_skips_missing_values(self):
+        merged, applied = tr._merge_scoped_changes(
+            _tracker_data(), _column_scope(), [{"row_id": "r1"}]
+        )
+        assert applied == 0
+        by_id = {r["row_id"]: r for r in merged["rows"]}
+        assert by_id["r1"]["values"]["col_7"] == ""
 
 
 class TestMergeSelectedColumns:
@@ -134,8 +163,9 @@ class TestMergeSelectedColumns:
             # col_1 is not in the selected set — must not be overwritten.
             {"row_id": "r1", "values": {"col_7": "Confirmed", "col_1": "tampered"}},
         ]
-        merged = tr._merge_scoped_changes(_tracker_data(), scope, ai_result)
+        merged, applied = tr._merge_scoped_changes(_tracker_data(), scope, ai_result)
         by_id = {r["row_id"]: r for r in merged["rows"]}
+        assert applied == 1
         assert by_id["r1"]["values"]["col_7"] == "Confirmed"
         assert by_id["r1"]["values"]["col_1"] == "Admin port open"
 

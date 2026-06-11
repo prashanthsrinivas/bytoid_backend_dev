@@ -39,6 +39,7 @@ _ERROR_LABELS = {
     "invalid_response": "AI returned an unexpected format — try rephrasing",
     "insufficient_credits": "Insufficient credits",
     "schema_validation_failed": "AI changes could not be applied safely",
+    "no_applicable_changes": "AI response didn't change the targeted cells — try rephrasing",
     "invalid_scope": "Operation not supported for the selected scope",
     "missing_column_name": "Column name is required",
 }
@@ -280,54 +281,79 @@ def _normalize_selected_column(col: dict) -> dict:
     return col
 
 
-def _merge_scoped_changes(tracker_data: dict, scope: dict, ai_result: dict) -> dict:
-    """Merge AI-generated scoped changes back into full tracker_data."""
+def _merge_scoped_changes(tracker_data: dict, scope: dict, ai_result: dict) -> tuple:
+    """Merge AI-generated scoped changes back into full tracker_data.
+
+    Returns (tracker_data, applied) where applied counts the cell writes that
+    actually changed a value (None for the unscoped/complete case). Items with
+    unknown row_ids or missing values are skipped instead of written as None,
+    so a zero count lets callers reject no-op proposals.
+    """
     scope_type = scope.get("type", "complete")
 
     if scope_type == "complete":
-        return ai_result
+        return ai_result, None
 
     rows_by_id = {row["row_id"]: row for row in tracker_data.get("rows", [])}
+    applied = 0
+
+    def _find_row(row_id):
+        row = rows_by_id.get(row_id)
+        if row is None and row_id is not None:
+            row = rows_by_id.get(str(row_id).strip())
+        return row
+
+    def _set_value(row, col_id, new_value):
+        nonlocal applied
+        if row is None or not col_id or new_value is None:
+            return
+        if row["values"].get(col_id) != new_value:
+            row["values"][col_id] = new_value
+            applied += 1
+
+    # Models sometimes echo the input key ("value") instead of the requested
+    # "new_value" — accept either rather than writing None.
+    def _new_value(item):
+        return item.get("new_value", item.get("value"))
 
     if scope_type == "selected_element":
-        row_id = ai_result.get("row_id")
-        col_id = ai_result.get("col_id")
-        new_value = ai_result.get("new_value")
-        if row_id in rows_by_id:
-            rows_by_id[row_id]["values"][col_id] = new_value
+        elem_col = scope.get("selected_element", {}).get("col_id")
+        row = _find_row(ai_result.get("row_id"))
+        col_id = elem_col or ai_result.get("col_id") or ai_result.get("column_id")
+        _set_value(row, col_id, _new_value(ai_result))
 
     elif scope_type == "selected_row":
-        row_id = ai_result.get("row_id")
-        new_values = ai_result.get("values", {})
-        if row_id in rows_by_id:
-            rows_by_id[row_id]["values"].update(new_values)
+        row = _find_row(ai_result.get("row_id"))
+        if row is not None:
+            for col_id, value in (ai_result.get("values") or {}).items():
+                _set_value(row, col_id, value)
 
     elif scope_type == "selected_column":
         col_id = scope.get("selected_column", {}).get("col_id")
         for item in ai_result:
-            row_id = item.get("row_id")
-            new_value = item.get("new_value")
-            if row_id in rows_by_id:
-                rows_by_id[row_id]["values"][col_id] = new_value
+            _set_value(_find_row(item.get("row_id")), col_id, _new_value(item))
 
     elif scope_type == "selected_rows":
         for item in ai_result:
-            row_id = item.get("row_id")
-            if row_id in rows_by_id:
-                rows_by_id[row_id]["values"].update(item.get("values", {}))
+            row = _find_row(item.get("row_id"))
+            if row is None:
+                continue
+            for col_id, value in (item.get("values") or {}).items():
+                _set_value(row, col_id, value)
 
     elif scope_type == "selected_columns":
         selected_cols = scope.get("selected_columns", [])
         col_ids = {col.get("col_id") for col in selected_cols}
         for item in ai_result:
-            row_id = item.get("row_id")
-            if row_id in rows_by_id:
-                for col_id, value in item.get("values", {}).items():
-                    if col_id in col_ids:
-                        rows_by_id[row_id]["values"][col_id] = value
+            row = _find_row(item.get("row_id"))
+            if row is None:
+                continue
+            for col_id, value in (item.get("values") or {}).items():
+                if col_id in col_ids:
+                    _set_value(row, col_id, value)
 
     tracker_data["rows"] = list(rows_by_id.values())
-    return tracker_data
+    return tracker_data, applied
 
 
 async def _handle_greeting(
@@ -748,7 +774,13 @@ Return ONLY valid JSON array:
     )
 
     if scope_type != "complete":
-        tracker_data = _merge_scoped_changes(tracker_data, scope, ai_result)
+        tracker_data, applied = _merge_scoped_changes(tracker_data, scope, ai_result)
+        if applied == 0:
+            logger.error(f"No applicable changes in reduce: scope={scope_type}")
+            return {
+                "error": "no_applicable_changes",
+                "message": "The AI response didn't change any of the targeted cells. Try rephrasing.",
+            }
     else:
         tracker_data = ai_result
 
@@ -1131,7 +1163,13 @@ Return ONLY valid JSON array:
     )
 
     if scope_type != "complete":
-        tracker_data = _merge_scoped_changes(tracker_data, scope, ai_result)
+        tracker_data, applied = _merge_scoped_changes(tracker_data, scope, ai_result)
+        if applied == 0:
+            logger.error(f"No applicable changes in increase: scope={scope_type}")
+            return {
+                "error": "no_applicable_changes",
+                "message": "The AI response didn't change any of the targeted cells. Try rephrasing.",
+            }
     else:
         tracker_data = ai_result
 
@@ -1293,7 +1331,12 @@ Current values across all rows:
 Apply the user's instruction to the value in column "{col_name}" for each row.
 
 Return ONLY valid JSON array:
-[{{"row_id": "...", "new_value": "<modified value>"}}, ...]"""
+[{{"row_id": "...", "new_value": "<modified value>"}}, ...]
+
+RULES:
+- Copy each row_id EXACTLY as given in the input.
+- Put the updated value in the "new_value" key.
+- Include every row whose value should change."""
 
             response = await get_fireworks_response2(
                 user_id, prompt, role="system", credits=credits, temp=0.7
@@ -1422,7 +1465,13 @@ Return ONLY valid JSON array:
     )
 
     if scope_type != "complete":
-        tracker_data = _merge_scoped_changes(tracker_data, scope, ai_result)
+        tracker_data, applied = _merge_scoped_changes(tracker_data, scope, ai_result)
+        if applied == 0:
+            logger.error(f"No applicable changes in modify_content: scope={scope_type}")
+            return {
+                "error": "no_applicable_changes",
+                "message": "The AI response didn't change any of the targeted cells. Try rephrasing.",
+            }
     else:
         tracker_data = ai_result
 
@@ -1569,7 +1618,13 @@ Rules:
         msg_builder.job_progress(job_id, session_id, "ai_complete", "AI changes ready.", 80)
     )
 
-    tracker_data = _merge_scoped_changes(tracker_data, scope, ai_result)
+    tracker_data, applied = _merge_scoped_changes(tracker_data, scope, ai_result)
+    if applied == 0:
+        logger.error("No applicable changes in _handle_complex_think")
+        return {
+            "error": "no_applicable_changes",
+            "message": "The AI response didn't change any of the targeted cells. Try rephrasing.",
+        }
     is_valid, error_msg = _validate_tracker_schema(scope.get("tracker_data", {}), tracker_data)
     if not is_valid:
         logger.error(f"Schema validation FAILED in _handle_complex_think: {error_msg}")
