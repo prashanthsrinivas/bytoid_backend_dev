@@ -27,6 +27,18 @@ PERMISSIONS = {
     "sg_audit.dashboard.read": "View Security Posture Dashboard",
     "sg_audit.recommend.generate": "Generate AI Tightening Recommendations",
     "sg_audit.remediation.request": "Request Remediation Approval",
+    # ================= AZURE CLOUD SECURITY POSTURE =================
+    "azure_audit.audit.create": "Run Azure Posture Audits",
+    "azure_audit.findings.read": "View Azure Posture Findings",
+    "azure_audit.dashboard.read": "View Azure Security Posture Dashboard",
+    "azure_audit.recommend.generate": "Generate Azure AI Tightening Recommendations",
+    "azure_audit.remediation.request": "Request Azure Remediation Approval",
+    # ================= GCP CLOUD SECURITY POSTURE =================
+    "gcp_audit.audit.create": "Run GCP Posture Audits",
+    "gcp_audit.findings.read": "View GCP Posture Findings",
+    "gcp_audit.dashboard.read": "View GCP Security Posture Dashboard",
+    "gcp_audit.recommend.generate": "Generate GCP AI Tightening Recommendations",
+    "gcp_audit.remediation.request": "Request GCP Remediation Approval",
     # ================= TRACKERS =================
     "trackers.table.view": "View Trackers",
     "trackers.table.create": "Create Table",

@@ -156,6 +156,73 @@ PERMISSION_METADATA = {
         "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
     },
 
+    # ================= AZURE CLOUD SECURITY POSTURE =================
+    # Same dependency discipline as sg_audit: only workspace.compliance_engine
+    # (a confirmed key). No azure.* dependency — an unknown one would make
+    # resolve_permissions silently 403 everyone.
+    "azure_audit.audit.create": {
+        "label": "Run Azure Posture Audits",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine"]
+    },
+    "azure_audit.findings.read": {
+        "label": "View Azure Posture Findings",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine"]
+    },
+    "azure_audit.dashboard.read": {
+        "label": "View Azure Security Posture Dashboard",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine", "azure_audit.findings.read"]
+    },
+    "azure_audit.recommend.generate": {
+        "label": "Generate Azure AI Tightening Recommendations",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "azure_audit.findings.read"]
+    },
+    "azure_audit.remediation.request": {
+        "label": "Request Azure Remediation Approval",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "azure_audit.findings.read"]
+    },
+
+    # ================= GCP CLOUD SECURITY POSTURE =================
+    "gcp_audit.audit.create": {
+        "label": "Run GCP Posture Audits",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine"]
+    },
+    "gcp_audit.findings.read": {
+        "label": "View GCP Posture Findings",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine"]
+    },
+    "gcp_audit.dashboard.read": {
+        "label": "View GCP Security Posture Dashboard",
+        "module": "Compliance",
+        "type": "read",
+        "dependencies": ["workspace.compliance_engine", "gcp_audit.findings.read"]
+    },
+    "gcp_audit.recommend.generate": {
+        "label": "Generate GCP AI Tightening Recommendations",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "gcp_audit.findings.read"]
+    },
+    "gcp_audit.remediation.request": {
+        "label": "Request GCP Remediation Approval",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "gcp_audit.findings.read"]
+    },
+
     # ================= TRACKERS =================
     "trackers.table.view": {
         "label": "View Trackers",
