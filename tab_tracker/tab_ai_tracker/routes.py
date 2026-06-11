@@ -1302,7 +1302,9 @@ Return ONLY valid JSON array:
                 return {"error": "insufficient_credits"}
             parsed = extract_json_safe(response)
             if isinstance(parsed, dict):
-                parsed = parsed.get("rows") or parsed.get("data")
+                parsed = (
+                    parsed.get("rows") or parsed.get("data") or parsed.get("result")
+                )
             if not parsed or not isinstance(parsed, list):
                 return {"error": "invalid_response"}
             ai_result = parsed
@@ -1403,7 +1405,9 @@ Return ONLY valid JSON array:
                 return {"error": "insufficient_credits"}
             parsed = extract_json_safe(response)
             if isinstance(parsed, dict):
-                parsed = parsed.get("rows") or parsed.get("data")
+                parsed = (
+                    parsed.get("rows") or parsed.get("data") or parsed.get("result")
+                )
             if not parsed or not isinstance(parsed, list):
                 return {"error": "invalid_response"}
             ai_result = parsed

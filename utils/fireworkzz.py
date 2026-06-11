@@ -777,19 +777,44 @@ def extract_json_safe(text: str):
         text = re.sub(r"^```json", "", text)
         text = re.sub(r"^```", "", text)
         text = re.sub(r"```$", "", text)
+        text = text.strip()
 
-    # find first JSON object
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-
-    if not match:
-        return None
-
-    json_str = match.group(0)
-
+    # Whole reply is valid JSON (object or array).
     try:
-        return json.loads(json_str)
+        return json.loads(text)
     except json.JSONDecodeError:
-        return None
+        pass
+
+    # Extract the first JSON value embedded in prose — object or array,
+    # whichever starts first.
+    obj_start = text.find("{")
+    arr_start = text.find("[")
+    if arr_start != -1 and (obj_start == -1 or arr_start < obj_start):
+        patterns = (r"\[.*\]", r"\{.*\}")
+    else:
+        patterns = (r"\{.*\}", r"\[.*\]")
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.DOTALL)
+        if not match:
+            continue
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+
+    # Salvage a truncated top-level array (max_tokens cutoff): keep the
+    # complete leading objects and close the bracket.
+    if arr_start != -1:
+        salvage = text[arr_start:]
+        last_obj_end = salvage.rfind("}")
+        if last_obj_end != -1:
+            try:
+                return json.loads(salvage[: last_obj_end + 1] + "]")
+            except json.JSONDecodeError:
+                pass
+
+    return None
 
 
 async def get_think_fire_response2_og2(
