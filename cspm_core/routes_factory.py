@@ -267,6 +267,104 @@ def build_blueprint(provider) -> Blueprint:
             return jsonify({"status": "generating", "scan_id": scan_id})
         return jsonify({"status": st or "error", "message": rec.get("message"), "scan_id": scan_id})
 
+    # ── per-finding drill-down (detail / chat / suppress / rescan / rec) ────
+    def _detail_ctx():
+        from cspm_core.finding_detail import DetailContext, make_cspm_rescan
+        storage = svc().storage
+
+        def _snap(uid, a, s=None):
+            return storage.get_snapshot(uid, a, s) if s else storage.get_latest_snapshot(uid, a)
+
+        return DetailContext(key=P.key, label=P.label, namespace=P.s3_namespace,
+                             redis_namespace=P.redis_namespace, meta=P.meta, get_snapshot=_snap,
+                             rescan=make_cspm_rescan(P),
+                             has_fixer=lambda r: r in (P.fixers or {}), scope_key="scope_id")
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>", methods=["GET"])
+    @permission_required_body(perms["findings_read"])
+    def finding_detail(audit_id, finding_id):
+        from cspm_core.finding_detail import detail_payload
+        uid, err = need_user()
+        if err:
+            return err
+        body, code = detail_payload(_detail_ctx(), uid, audit_id, finding_id,
+                                    request.args.get("scan_id"))
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/chat", methods=["POST"])
+    @permission_required_body(perms["recommend"])
+    def finding_chat(audit_id, finding_id):
+        from cspm_core.finding_detail import chat_payload
+        uid, err = need_user()
+        if err:
+            return err
+        msg = (request.get_json(silent=True) or {}).get("message", "")
+        body, code = chat_payload(_detail_ctx(), uid, audit_id, finding_id, msg)
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/declarations", methods=["POST"])
+    @permission_required_body(perms["recommend"])
+    def finding_declarations(audit_id, finding_id):
+        from cspm_core.finding_detail import declarations_payload
+        uid, err = need_user()
+        if err:
+            return err
+        decls = (request.get_json(silent=True) or {}).get("declarations")
+        body, code = declarations_payload(_detail_ctx(), uid, audit_id, finding_id, decls)
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/suppress", methods=["POST"])
+    @permission_required_body(perms["remediation"])
+    def finding_suppress(audit_id, finding_id):
+        from cspm_core.finding_detail import suppress_payload
+        uid, err = need_user()
+        if err:
+            return err
+        reason = (request.get_json(silent=True) or {}).get("reason", "")
+        body, code = suppress_payload(_detail_ctx(), uid, audit_id, finding_id, reason)
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/unsuppress", methods=["POST"])
+    @permission_required_body(perms["remediation"])
+    def finding_unsuppress(audit_id, finding_id):
+        from cspm_core.finding_detail import unsuppress_payload
+        uid, err = need_user()
+        if err:
+            return err
+        body, code = unsuppress_payload(_detail_ctx(), uid, audit_id, finding_id)
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/rescan", methods=["POST"])
+    @permission_required_body(perms["create"])
+    def finding_rescan(audit_id, finding_id):
+        from cspm_core.finding_detail import rescan_payload
+        uid, err = need_user()
+        if err:
+            return err
+        body, code = rescan_payload(_detail_ctx(), uid, audit_id, finding_id)
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/recommendation", methods=["POST"])
+    @permission_required_body(perms["recommend"])
+    def finding_recommend(audit_id, finding_id):
+        from cspm_core.finding_detail import recommend_launch_payload
+        uid, err = need_user()
+        if err:
+            return err
+        force = bool((request.get_json(silent=True) or {}).get("force"))
+        body, code = recommend_launch_payload(_detail_ctx(), uid, audit_id, finding_id, force=force)
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/recommendation", methods=["GET"])
+    @permission_required_body(perms["findings_read"])
+    def finding_recommendation(audit_id, finding_id):
+        from cspm_core.finding_detail import recommendation_get_payload
+        uid, err = need_user()
+        if err:
+            return err
+        body, code = recommendation_get_payload(_detail_ctx(), uid, audit_id, finding_id)
+        return jsonify(body), code
+
     # ── remediation approval + (gated) execution ────────────────────────────
     @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/remediation", methods=["POST"])
     @permission_required_body(perms["remediation"])

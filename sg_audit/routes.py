@@ -437,6 +437,136 @@ def sg_list_remediations(audit_id):
     return jsonify({"status": "success", "remediations": list_remediations(user_id, audit_id)})
 
 
+# ── Per-finding drill-down (detail / chat / suppress / rescan / rec) ─────────
+# Shares cspm_core.finding_detail with the Azure/GCP providers; only the
+# adapter differs (Lambda-based collection means rescan relaunches the audit).
+
+def _sg_detail_ctx():
+    from cspm_core.finding_detail import DetailContext
+    from sg_audit import metadata
+    from sg_audit.autoremediate import supported
+
+    storage = SgAuditService().storage
+
+    def _snap(uid, audit_id, scan_id=None):
+        return (storage.get_snapshot(uid, audit_id, scan_id) if scan_id
+                else storage.get_latest_snapshot(uid, audit_id))
+
+    def _rescan(uid, audit_id, _finding):
+        from sg_audit.collect import trigger_collection
+
+        res = _run_async(trigger_collection(uid, audit_id, force=True))
+        if res.get("status") in ("launched", "already_running"):
+            return {"status": "launched", "scan_id": res.get("scan_id"),
+                    "message": "Full audit rescan launched — findings refresh when the scan completes."}
+        return res
+
+    return DetailContext(key="sg", label="AWS", namespace="sg_audit", redis_namespace="sg_audit",
+                         meta=metadata.meta, get_snapshot=_snap, rescan=_rescan,
+                         has_fixer=supported, scope_key="account_id")
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_finding_detail(audit_id, finding_id):
+    from cspm_core.finding_detail import detail_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body, code = detail_payload(_sg_detail_ctx(), user_id, audit_id, finding_id,
+                                request.args.get("scan_id"))
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/chat", methods=["POST"])
+@permission_required_body("sg_audit.recommend.generate")
+def sg_finding_chat(audit_id, finding_id):
+    from cspm_core.finding_detail import chat_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    message = (request.get_json(silent=True) or {}).get("message", "")
+    body, code = chat_payload(_sg_detail_ctx(), user_id, audit_id, finding_id, message)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/declarations", methods=["POST"])
+@permission_required_body("sg_audit.recommend.generate")
+def sg_finding_declarations(audit_id, finding_id):
+    from cspm_core.finding_detail import declarations_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    declarations = (request.get_json(silent=True) or {}).get("declarations")
+    body, code = declarations_payload(_sg_detail_ctx(), user_id, audit_id, finding_id, declarations)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/suppress", methods=["POST"])
+@permission_required_body("sg_audit.remediation.request")
+def sg_finding_suppress(audit_id, finding_id):
+    from cspm_core.finding_detail import suppress_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    reason = (request.get_json(silent=True) or {}).get("reason", "")
+    body, code = suppress_payload(_sg_detail_ctx(), user_id, audit_id, finding_id, reason)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/unsuppress", methods=["POST"])
+@permission_required_body("sg_audit.remediation.request")
+def sg_finding_unsuppress(audit_id, finding_id):
+    from cspm_core.finding_detail import unsuppress_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body, code = unsuppress_payload(_sg_detail_ctx(), user_id, audit_id, finding_id)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/rescan", methods=["POST"])
+@permission_required_body("sg_audit.audit.create")
+def sg_finding_rescan(audit_id, finding_id):
+    from cspm_core.finding_detail import rescan_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body, code = rescan_payload(_sg_detail_ctx(), user_id, audit_id, finding_id)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/recommendation", methods=["POST"])
+@permission_required_body("sg_audit.recommend.generate")
+def sg_finding_recommend(audit_id, finding_id):
+    from cspm_core.finding_detail import recommend_launch_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    force = bool((request.get_json(silent=True) or {}).get("force"))
+    body, code = recommend_launch_payload(_sg_detail_ctx(), user_id, audit_id, finding_id, force=force)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/finding/<path:finding_id>/recommendation", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_finding_recommendation(audit_id, finding_id):
+    from cspm_core.finding_detail import recommendation_get_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body, code = recommendation_get_payload(_sg_detail_ctx(), user_id, audit_id, finding_id)
+    return jsonify(body), code
+
+
 # ── Reuse: tables → Trackers + runbook Responses & Evidence ─────────────────
 
 @sg_audit_bp.route("/sg-audit/audit/<audit_id>/evidence", methods=["GET"])
