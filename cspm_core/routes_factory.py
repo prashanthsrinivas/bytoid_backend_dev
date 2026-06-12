@@ -365,6 +365,76 @@ def build_blueprint(provider) -> Blueprint:
         body, code = recommendation_get_payload(_detail_ctx(), uid, audit_id, finding_id)
         return jsonify(body), code
 
+    # ── action plan (consolidated, approvable, never executed) ──────────────
+    def _plan_ctx():
+        from cspm_core.action_plan import ActionPlanContext
+        storage = svc().storage
+
+        def _snap(uid, a, s=None):
+            return storage.get_snapshot(uid, a, s) if s else storage.get_latest_snapshot(uid, a)
+
+        return ActionPlanContext(key=P.key, label=P.label, namespace=P.s3_namespace,
+                                 redis_namespace=P.redis_namespace, meta=P.meta,
+                                 get_snapshot=_snap,
+                                 get_recommendation=storage.get_recommendation,
+                                 cli_tool=P.cli_tool or "az",
+                                 cli_builders=P.cli_builders or {}, scope_key="scope_id")
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/action-plan", methods=["POST"])
+    @permission_required_body(perms["action_plan_generate"])
+    def action_plan_generate(audit_id):
+        from cspm_core.action_plan import plan_launch_payload
+        uid, err = need_user()
+        if err:
+            return err
+        force = bool((request.get_json(silent=True) or {}).get("force"))
+        body, code = plan_launch_payload(_plan_ctx(), uid, audit_id, force=force)
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/action-plan", methods=["GET"])
+    @permission_required_body(perms["findings_read"])
+    def action_plan_get(audit_id):
+        from cspm_core.action_plan import plan_get_payload
+        uid, err = need_user()
+        if err:
+            return err
+        body, code = plan_get_payload(_plan_ctx(), uid, audit_id)
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/action-plan/point/<point_id>/command", methods=["POST"])
+    @permission_required_body(perms["action_plan_edit"])
+    def action_plan_edit_command(audit_id, point_id):
+        from cspm_core.action_plan import edit_command_payload
+        uid, err = need_user()
+        if err:
+            return err
+        data = request.get_json(silent=True) or {}
+        body, code = edit_command_payload(_plan_ctx(), uid, audit_id, point_id,
+                                          data.get("index"), data.get("command", ""))
+        return jsonify(body), code
+
+    @bp.route(f"/{prefix}/audit/<audit_id>/action-plan/point/<point_id>/request-approval",
+              methods=["POST"])
+    @permission_required_body(perms["action_plan_request"])
+    def action_plan_request_approval(audit_id, point_id):
+        from cspm_core.action_plan import request_point_approval_payload
+        uid, err = need_user()
+        if err:
+            return err
+        body, code = request_point_approval_payload(_plan_ctx(), uid, audit_id, point_id)
+        return jsonify(body), code
+
+    # ── architecture view (derived from the latest snapshot) ────────────────
+    @bp.route(f"/{prefix}/audit/<audit_id>/architecture", methods=["GET"])
+    @permission_required_body(perms["findings_read"])
+    def architecture_view(audit_id):
+        from cspm_core.architecture import architecture_payload
+        uid, err = need_user()
+        if err:
+            return err
+        body, code = architecture_payload(_detail_ctx(), uid, audit_id)
+        return jsonify(body), code
+
     # ── remediation approval + (gated) execution ────────────────────────────
     @bp.route(f"/{prefix}/audit/<audit_id>/finding/<path:finding_id>/remediation", methods=["POST"])
     @permission_required_body(perms["remediation"])

@@ -567,6 +567,92 @@ def sg_finding_recommendation(audit_id, finding_id):
     return jsonify(body), code
 
 
+# ── Action plan (consolidated, approvable, never executed) + architecture ────
+
+def _sg_plan_ctx():
+    from cspm_core.action_plan import ActionPlanContext
+    from sg_audit import metadata
+    from sg_audit.cli_commands import CLI_BUILDERS
+
+    storage = SgAuditService().storage
+
+    def _snap(uid, audit_id, scan_id=None):
+        return (storage.get_snapshot(uid, audit_id, scan_id) if scan_id
+                else storage.get_latest_snapshot(uid, audit_id))
+
+    return ActionPlanContext(key="sg", label="AWS", namespace="sg_audit",
+                             redis_namespace="sg_audit", meta=metadata.meta,
+                             get_snapshot=_snap,
+                             get_recommendation=storage.get_recommendation,
+                             cli_tool="aws", cli_builders=CLI_BUILDERS,
+                             scope_key="account_id")
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/action-plan", methods=["POST"])
+@permission_required_body("sg_audit.action_plan.generate")
+def sg_action_plan_generate(audit_id):
+    from cspm_core.action_plan import plan_launch_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    force = bool((request.get_json(silent=True) or {}).get("force"))
+    body, code = plan_launch_payload(_sg_plan_ctx(), user_id, audit_id, force=force)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/action-plan", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_action_plan_get(audit_id):
+    from cspm_core.action_plan import plan_get_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body, code = plan_get_payload(_sg_plan_ctx(), user_id, audit_id)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/action-plan/point/<point_id>/command",
+                   methods=["POST"])
+@permission_required_body("sg_audit.action_plan.edit")
+def sg_action_plan_edit_command(audit_id, point_id):
+    from cspm_core.action_plan import edit_command_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    data = request.get_json(silent=True) or {}
+    body, code = edit_command_payload(_sg_plan_ctx(), user_id, audit_id, point_id,
+                                      data.get("index"), data.get("command", ""))
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/action-plan/point/<point_id>/request-approval",
+                   methods=["POST"])
+@permission_required_body("sg_audit.action_plan.request")
+def sg_action_plan_request_approval(audit_id, point_id):
+    from cspm_core.action_plan import request_point_approval_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body, code = request_point_approval_payload(_sg_plan_ctx(), user_id, audit_id, point_id)
+    return jsonify(body), code
+
+
+@sg_audit_bp.route("/sg-audit/audit/<audit_id>/architecture", methods=["GET"])
+@permission_required_body("sg_audit.findings.read")
+def sg_architecture_view(audit_id):
+    from cspm_core.architecture import architecture_payload
+
+    _base, user_id = _user_id_from_request()
+    if not user_id:
+        return jsonify({"status": "error", "message": "Missing user_id"}), 400
+    body, code = architecture_payload(_sg_detail_ctx(), user_id, audit_id)
+    return jsonify(body), code
+
+
 # ── Reuse: tables → Trackers + runbook Responses & Evidence ─────────────────
 
 @sg_audit_bp.route("/sg-audit/audit/<audit_id>/evidence", methods=["GET"])

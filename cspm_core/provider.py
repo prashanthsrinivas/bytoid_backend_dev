@@ -41,6 +41,10 @@ class Provider:
     default_audit_name: str = "Cloud Security Posture Audit"
     default_role_hint: str = ""    # ops note shown after audit creation
 
+    # Action plan: CLI command templates (display/copy only — never executed).
+    cli_tool: str = ""             # "az" | "gcloud" (AWS/sg uses its own adapter)
+    cli_builders: dict = field(default_factory=dict)  # rule_id -> fn(finding) -> [commands]
+
     # accessors -------------------------------------------------------------
     def meta(self, rule_id: str) -> dict:
         return self.rule_meta.get(rule_id, {})

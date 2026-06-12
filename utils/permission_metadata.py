@@ -155,6 +155,24 @@ PERMISSION_METADATA = {
         "type": "create",
         "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
     },
+    "sg_audit.action_plan.generate": {
+        "label": "Consolidate AWS Action Plan",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
+    },
+    "sg_audit.action_plan.edit": {
+        "label": "Edit AWS Action Plan Commands",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
+    },
+    "sg_audit.action_plan.request": {
+        "label": "Request AWS Action Plan Approval",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "sg_audit.findings.read"]
+    },
 
     # ================= AZURE CLOUD SECURITY POSTURE =================
     # Same dependency discipline as sg_audit: only workspace.compliance_engine
@@ -190,6 +208,24 @@ PERMISSION_METADATA = {
         "type": "create",
         "dependencies": ["workspace.compliance_engine", "azure_audit.findings.read"]
     },
+    "azure_audit.action_plan.generate": {
+        "label": "Consolidate Azure Action Plan",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "azure_audit.findings.read"]
+    },
+    "azure_audit.action_plan.edit": {
+        "label": "Edit Azure Action Plan Commands",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "azure_audit.findings.read"]
+    },
+    "azure_audit.action_plan.request": {
+        "label": "Request Azure Action Plan Approval",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "azure_audit.findings.read"]
+    },
 
     # ================= GCP CLOUD SECURITY POSTURE =================
     "gcp_audit.audit.create": {
@@ -218,6 +254,24 @@ PERMISSION_METADATA = {
     },
     "gcp_audit.remediation.request": {
         "label": "Request GCP Remediation Approval",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "gcp_audit.findings.read"]
+    },
+    "gcp_audit.action_plan.generate": {
+        "label": "Consolidate GCP Action Plan",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "gcp_audit.findings.read"]
+    },
+    "gcp_audit.action_plan.edit": {
+        "label": "Edit GCP Action Plan Commands",
+        "module": "Compliance",
+        "type": "create",
+        "dependencies": ["workspace.compliance_engine", "gcp_audit.findings.read"]
+    },
+    "gcp_audit.action_plan.request": {
+        "label": "Request GCP Action Plan Approval",
         "module": "Compliance",
         "type": "create",
         "dependencies": ["workspace.compliance_engine", "gcp_audit.findings.read"]

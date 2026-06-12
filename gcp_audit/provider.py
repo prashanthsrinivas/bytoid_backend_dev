@@ -11,6 +11,7 @@ from __future__ import annotations
 from utils.base_logger import get_logger
 from cspm_core.provider import Provider
 from gcp_audit.config import auto_remediate_enabled
+from gcp_audit.cli_commands import CLI_BUILDERS
 from gcp_audit.fixers import FIXERS
 from gcp_audit.metadata import CIS_FAMILIES, CIS_LABEL, DOMAIN_LABELS, DOMAINS, RULE_META
 
@@ -22,6 +23,9 @@ PERMS = {
     "dashboard_read": "gcp_audit.dashboard.read",
     "recommend": "gcp_audit.recommend.generate",
     "remediation": "gcp_audit.remediation.request",
+    "action_plan_generate": "gcp_audit.action_plan.generate",
+    "action_plan_edit": "gcp_audit.action_plan.edit",
+    "action_plan_request": "gcp_audit.action_plan.request",
 }
 
 
@@ -91,7 +95,8 @@ GCP_PROVIDER = Provider(
     redis_namespace="gcp_audit", domains=DOMAINS, domain_labels=DOMAIN_LABELS,
     rule_meta=RULE_META, cis_label=CIS_LABEL, cis_families=CIS_FAMILIES, perms=PERMS,
     resolve_credentials=resolve_credentials, enumerate_scopes=enumerate_scopes, collect=collect,
-    fixers=FIXERS, auto_remediate_enabled=auto_remediate_enabled, scope_label="project",
+    fixers=FIXERS, auto_remediate_enabled=auto_remediate_enabled,
+    cli_tool="gcloud", cli_builders=CLI_BUILDERS, scope_label="project",
     default_audit_name="GCP Cloud Security Posture Audit",
     default_role_hint="Connect GCP via the GCP Integration (service-account key). Grant the service account "
                       "Viewer + Security Reviewer on the target org/projects. Set organization_id to scan org-wide.")

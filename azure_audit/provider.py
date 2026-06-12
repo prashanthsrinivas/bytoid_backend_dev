@@ -12,6 +12,7 @@ import requests
 
 from utils.base_logger import get_logger
 from azure_audit.config import auto_remediate_enabled
+from azure_audit.cli_commands import CLI_BUILDERS
 from azure_audit.fixers import FIXERS
 from azure_audit.metadata import CIS_FAMILIES, CIS_LABEL, DOMAIN_LABELS, DOMAINS, RULE_META
 from cspm_core.provider import Provider
@@ -24,6 +25,9 @@ PERMS = {
     "dashboard_read": "azure_audit.dashboard.read",
     "recommend": "azure_audit.recommend.generate",
     "remediation": "azure_audit.remediation.request",
+    "action_plan_generate": "azure_audit.action_plan.generate",
+    "action_plan_edit": "azure_audit.action_plan.edit",
+    "action_plan_request": "azure_audit.action_plan.request",
 }
 
 _ARM_SCOPE = "https://management.azure.com/.default"
@@ -106,7 +110,8 @@ AZURE_PROVIDER = Provider(
     redis_namespace="azure_audit", domains=DOMAINS, domain_labels=DOMAIN_LABELS,
     rule_meta=RULE_META, cis_label=CIS_LABEL, cis_families=CIS_FAMILIES, perms=PERMS,
     resolve_credentials=resolve_credentials, enumerate_scopes=enumerate_scopes, collect=collect,
-    fixers=FIXERS, auto_remediate_enabled=auto_remediate_enabled, scope_label="subscription",
+    fixers=FIXERS, auto_remediate_enabled=auto_remediate_enabled,
+    cli_tool="az", cli_builders=CLI_BUILDERS, scope_label="subscription",
     default_audit_name="Azure Cloud Security Posture Audit",
     default_role_hint="Connect Azure via the Azure Integration (SAML). The app mints a read-only ARM token; "
                       "ensure the app registration has at least Reader on the target subscriptions.")
