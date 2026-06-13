@@ -2671,6 +2671,123 @@ async def delete_tracker_column():
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 
+@tracker_bp.route("/tracker/set-link-column", methods=["POST"])
+@permission_required_body("trackers.table.edit")
+def set_tracker_link_column():
+    """Designate (or clear) the single column whose cell content represents a
+    row when it is connected to a policy statement.
+
+    The "link column" is a display concept only — it does not change which rows
+    map to which statements (that still lives in the ``policies`` column and the
+    ``statement_tracker_refs`` reverse-lookup). The policy-hub Threat Model
+    Summary panel shows this column's cell value for each linked row instead of
+    guessing a column / falling back to "Row N".
+
+    Body: ``{ user_id, tracker_id, column_id, enabled? }`` (table trackers only).
+    ``enabled`` defaults to True. Exactly one column may carry the flag, so it is
+    cleared from every other column first. Pass ``enabled=false`` to unset it.
+    """
+    try:
+        data = request.json or {}
+        baseuser = str(data.get("user_id"))
+        tracker_id = data.get("tracker_id")
+        column_id = data.get("column_id")
+        enabled = data.get("enabled", True)
+
+        if not all([baseuser, tracker_id, column_id]):
+            return (
+                jsonify({"error": "Missing required fields: user_id, tracker_id, column_id"}),
+                400,
+            )
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
+        config_path, config_data = check_config_exist(user_id)
+        tracker_meta = next(
+            (
+                t
+                for t in (config_data or {}).get("trackers", [])
+                if t["tracker_id"] == tracker_id
+            ),
+            None,
+        )
+        if not tracker_meta:
+            return jsonify({"error": f"Tracker not found: {tracker_id}"}), 404
+
+        tracker_type = tracker_meta.get("type")
+        if tracker_type != "table":
+            return (
+                jsonify({"error": "Link column is only supported for table trackers"}),
+                400,
+            )
+
+        tracker_data = read_json_from_s3(tracker_meta["file_path"])
+        if tracker_data:
+            tracker_data, _ = _decrypt_tracker_data(user_id, tracker_data)
+        if not tracker_data:
+            return jsonify({"error": "Tracker file not found on storage"}), 404
+
+        schema_cols = tracker_data.get("schema", {}).get("columns", [])
+        target = next((c for c in schema_cols if c.get("id") == column_id), None)
+        if not target:
+            return jsonify({"error": f"Column '{column_id}' not found in schema"}), 404
+
+        # The link column must be a normal data column — policy/framework columns
+        # hold structured mappings, not human-readable row content.
+        if target.get("source_column") in ("policies", "frameworks"):
+            return (
+                jsonify({"error": "Cannot link a policy or framework column"}),
+                400,
+            )
+
+        # Mutual exclusivity: only one column carries the flag at a time.
+        for col in schema_cols:
+            col.pop("is_link_column", None)
+        if enabled:
+            target["is_link_column"] = True
+
+        save_tracker_file(user_id, tracker_id, tracker_data)
+
+        # Audit logging
+        (
+            actor_user_id,
+            actor_email,
+            acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email,
+        ) = build_audit_actor(baseuser)
+        log_audit_event(
+            action=TRACKER_MODIFIED,
+            endpoint="/tracker/set-link-column",
+            ip=request.remote_addr,
+            status="success",
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            acting_on_behalf_of_user_id=acting_on_behalf_of_user_id,
+            acting_on_behalf_of_email=acting_on_behalf_of_email,
+            metadata={
+                "tracker_id": tracker_id,
+                "column_id": column_id,
+                "enabled": bool(enabled),
+            },
+        )
+        g.audit_logged = True
+
+        return (
+            jsonify(
+                {
+                    "message": "Link column updated successfully",
+                    "tracker_id": tracker_id,
+                    "column_id": column_id if enabled else None,
+                    "columns": schema_cols,
+                }
+            ),
+            200,
+        )
+
+    except Exception as e:
+        logging.error(f"Set tracker link column error: {traceback.format_exc()}")
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+
 @tracker_bp.route("/tracker/upload-evidence", methods=["POST"])
 @permission_required_body("trackers.table.edit")
 def upload_evidence_api():
