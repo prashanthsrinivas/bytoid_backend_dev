@@ -189,18 +189,36 @@ class WorkflowRunnerV2:
         main_user_account_type = fetch_user_Social(
             user_id=self.userid, connection=self.connection
         )
-        timezone = None
-        if main_user_account_type == "google":
-            from services.meet_service import GoogleMeetService
+        # get_user_timezone() reads self.organizer_tz from the user's connected
+        # calendar, so it must be called on an INSTANCE — calling it on the class
+        # raised "missing 1 required positional argument: 'self'", which bubbled
+        # up as the generic "Error processing option." on any meeting/scheduler
+        # step for a Google/Microsoft user. Resolving the timezone is best-effort:
+        # fall back to UTC rather than failing the whole step.
+        timezone = "UTC"
+        try:
+            if main_user_account_type == "google":
+                from services.meet_service import GoogleMeetService
 
-            timezone = GoogleMeetService.get_user_timezone()
-        elif main_user_account_type == "microsoft":
-            from services.microsoft_calender_service import (
-                MicrosoftGraphCalendarService,
+                timezone = (
+                    GoogleMeetService(userid=self.userid).get_user_timezone() or "UTC"
+                )
+            elif main_user_account_type == "microsoft":
+                from services.microsoft_calender_service import (
+                    MicrosoftGraphCalendarService,
+                )
+
+                timezone = (
+                    MicrosoftGraphCalendarService(userid=self.userid).get_user_timezone()
+                    or "UTC"
+                )
+        except Exception as e:
+            self.logger.warning(
+                "Could not resolve %s timezone for user %s; defaulting to UTC: %s",
+                main_user_account_type,
+                self.userid,
+                e,
             )
-
-            timezone = MicrosoftGraphCalendarService.get_user_timezone()
-        else:
             timezone = "UTC"
         return main_user_account_type, timezone
 
@@ -2712,8 +2730,10 @@ class WorkflowRunnerV2:
             import traceback as _tb
 
             self.logger.error("Error in check_input_tone: %s\n%s", e, _tb.format_exc())
+            # Surface a concise reason instead of an opaque message so the failure
+            # is diagnosable from the UI; the full traceback stays in the logs.
             return {
-                "response_message": "Error processing option.",
+                "response_message": f"Error processing option: {type(e).__name__}: {e}",
                 "wf_single_runner": False,
                 "log_status": "error",
             }
