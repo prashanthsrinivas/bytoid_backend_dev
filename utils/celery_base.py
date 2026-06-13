@@ -91,6 +91,10 @@ def make_celery(app_name=__name__):
             task_reject_on_worker_lost=True,
             worker_prefetch_multiplier=1,
             broker_transport_options={"visibility_timeout": 3600},
+            # Bound broker connect so a synchronous send_task() from the web tier
+            # (e.g. interactive step scheduling) fails fast instead of hanging the
+            # request when the broker is unreachable.
+            broker_connection_timeout=5,
             broker_use_ssl={
                 "ssl_cert_reqs": "none"
             },  # required for AWS ElastiCache TLS
@@ -108,6 +112,10 @@ def make_celery(app_name=__name__):
             task_reject_on_worker_lost=True,
             worker_prefetch_multiplier=1,
             broker_transport_options={"visibility_timeout": 3600},
+            # Bound broker connect so a synchronous send_task() from the web tier
+            # (e.g. interactive step scheduling) fails fast instead of hanging the
+            # request when the broker is unreachable.
+            broker_connection_timeout=5,
             broker_use_ssl={
                 "ssl_ca_certs": "/home/ec2-user/bytoid_python/awsredis.pem",  # 👈 ADD HERE
                 "ssl_cert_reqs": "required",
@@ -700,7 +708,11 @@ def run_scheduled_job(self, userid, filename, contacts, uniquekey):
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.workflow_schedule_single")
-def run_scheduled_step_job(self, userid, filename, stepid):
+def run_scheduled_step_job(self, userid, filename, stepid, uniquekey=None):
+    # uniquekey is passed by SchedulerService.schedule_single_step (4 args). It
+    # was missing from this signature, so every scheduled single step raised
+    # "takes 4 positional arguments but 5 were given" in the worker and never
+    # actually executed. Accept it (optional for backwards compatibility).
     from services.workflow_service import WorkflowRunnerV2
 
     try:

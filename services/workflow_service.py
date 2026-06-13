@@ -1092,7 +1092,16 @@ class WorkflowRunnerV2:
         # ---------------------------
         # Schedule SINGLE step
         # ---------------------------
-        result = SchedulerService.schedule_single_step(
+        # schedule_single_step is async and publishes to the Celery broker. It
+        # MUST be awaited — calling it bare returns a coroutine that never runs
+        # (scheduling silently no-ops) and the result["task_id"] access below
+        # then raises "'coroutine' object is not subscriptable", which the
+        # caller swallowed into the opaque hang on "Schedule the meeting now".
+        # The broker publish is best-effort: a slow/unreachable broker must not
+        # hang this interactive chat request, so a publish failure is surfaced
+        # as a clean error (see check_input_tone) rather than blocking the SSE
+        # stream forever.
+        result = await SchedulerService.schedule_single_step(
             run_at=run_at,
             userid=self.userid,
             filename=self.filename,

@@ -112,10 +112,17 @@ class SchedulerService:
         #         "status": "already_scheduled",
         #     }
 
+        # This runs inside the interactive "Schedule the meeting now" request, so
+        # the broker publish must fail fast rather than hang the SSE stream when
+        # the broker is slow/unreachable. retry=False makes a single attempt
+        # bounded by broker_connection_timeout (set in utils/celery_base.py), so
+        # a broker outage becomes a quick error instead of a spinner that never
+        # resolves.
         task = celery.send_task(
             "tasks.workflow_schedule_single",
             args=[userid, filename, stepid, uniquekey],
             eta=dt_utc,
+            retry=False,
         )
         # await SchedulerService.redis_service.set(key, task.id, ex=86400)
         # print("task made for single", task)
