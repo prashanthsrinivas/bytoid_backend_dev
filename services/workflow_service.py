@@ -3785,6 +3785,7 @@ class WorkflowRunnerV2:
         import re
         from config_evidences.evidence_helpers import get_only_evidence
         from db.lance_db_service import LanceDBServer
+        from runbook.evidence_overview import canonicalize_artifact_name
 
         if inp_links is None:
             inp_links = []
@@ -3793,7 +3794,11 @@ class WorkflowRunnerV2:
 
         assigned_ques = self.workflow_json.get("assigned_questions", [])
         if not assigned_ques:
-            return {"error": "No assigned questions found"}
+            return {
+                "error": "No assigned questions found",
+                "answered_now": 0,
+                "message": "This workflow has no questions assigned yet.",
+            }
 
         execution_data = self.previous_data
         chats = self.chat_history
@@ -3814,7 +3819,11 @@ class WorkflowRunnerV2:
         # EARLY EXIT
         # ===========================
         if not extracted_files and not inp_links:
-            return {"error": "No usable content found"}
+            return {
+                "error": "No usable content found",
+                "answered_now": 0,
+                "message": "We couldn't read any content from the uploaded files.",
+            }
 
         CHUNK_SIZE = 8000
         OVERLAP = 500
@@ -3845,6 +3854,14 @@ class WorkflowRunnerV2:
         # ===========================
         user_evidence = get_only_evidence(self.userid)
         # print("user structur evidence", user_evidence) # OK
+        # The authoritative set of artifact names. The LLM classifiers below can
+        # paraphrase ("Access Control Policy" vs the config's "Policies"); every
+        # downstream comparison is exact-string, so a paraphrase would be silently
+        # dropped. canonicalize_artifact_name() snaps each classification back to
+        # one of these names (or None when nothing matches confidently).
+        known_artifact_names = [
+            e.get("artifact") for e in user_evidence if e.get("artifact")
+        ]
         evidence_summary = json.dumps(
             [
                 {
@@ -3885,17 +3902,46 @@ class WorkflowRunnerV2:
                 self.logger.error("Runbook config fetch failed: %s", e, exc_info=IS_DEV)
 
         self.logger.debug("runbook evidence config: %s", runbook_evidence_config)
+
+        def _parse_decision(value):
+            """Tolerate boolean OR string decisions. Returns True/False, or None
+            when the value is missing/unrecognized (so we can skip, not reject)."""
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                v = value.strip().lower()
+                if v in ("true", "yes", "allow", "allowed", "required", "1"):
+                    return True
+                if v in ("false", "no", "deny", "denied", "disallow", "disallowed", "0"):
+                    return False
+            return None
+
         for cfg in runbook_evidence_config:
-            artifact = cfg.get("artifact", "")
-            decision = (
-                cfg.get("decision")
-                if cfg.get("decision") is not None
+            raw_artifact = cfg.get("artifact", "")
+            if not raw_artifact:
+                continue
+            # Snap the config's artifact name to the canonical config name so it
+            # lines up with the (also-canonicalized) classifier output below.
+            artifact = (
+                canonicalize_artifact_name(raw_artifact, known_artifact_names)
+                or raw_artifact
+            )
+            decision = _parse_decision(
+                cfg.get("decision") if cfg.get("decision") is not None
                 else cfg.get("Decision")
             )
             if decision is True:
                 allowed_artifacts.add(artifact)
             elif decision is False:
                 disallowed_artifacts.add(artifact)
+            else:
+                # Don't let a malformed row silently push valid evidence to
+                # inadmissible — log and skip it instead.
+                self.logger.warning(
+                    "Runbook config entry for %r has no parseable decision (%r); skipping",
+                    raw_artifact,
+                    cfg.get("decision", cfg.get("Decision")),
+                )
         self.logger.debug("allowed artifacts: %s", allowed_artifacts)
         self.logger.debug("disallowed artifacts: %s", disallowed_artifacts)
 
@@ -3939,8 +3985,12 @@ class WorkflowRunnerV2:
             "Identify which evidence types from the list are present in this chunk "
             "and report your confidence (0.0-1.0) for each. "
             "Extract relevant content snippets.\n\n"
+            "IMPORTANT: the \"artifact\" value MUST be copied VERBATIM from the "
+            "\"artifact\" field of the KNOWN EVIDENCE TYPES list above — do not "
+            "rename, paraphrase, pluralize, or invent a label. If nothing in the "
+            "list fits, return an empty array [].\n\n"
             "Return ONLY valid JSON (no markdown):\n"
-            '[{"artifact": "<artifact name>", "content": "<relevant snippet>", "confidence": 0.0}]'
+            '[{"artifact": "<artifact name copied from the list>", "content": "<relevant snippet>", "confidence": 0.0}]'
         )
         self.logger.info("Starting evidence classification (text chunks — per file)")
 
@@ -3993,13 +4043,23 @@ class WorkflowRunnerV2:
                     )
 
             best = pick_best_artifact(file_candidates)
-            if best:
+            # Snap the classifier's free-form artifact name to a known config
+            # name. None → unrecognized; the file is left out of evidence_map and
+            # is recorded as inadmissible ("No recognized evidence type") later.
+            canonical = canonicalize_artifact_name(best, known_artifact_names) if best else None
+            if canonical:
                 entry = evidence_map.setdefault(
-                    best, {"snippets": [], "files": set()}
+                    canonical, {"snippets": [], "files": set()}
                 )
                 entry["snippets"].extend(file_candidates[best]["snippets"])
                 if cf_url:
                     entry["files"].add(cf_url)
+            elif best:
+                self.logger.info(
+                    "File %s classified as %r which matched no known evidence type",
+                    cf_url or "?",
+                    best,
+                )
 
         if inp_links:
             self.logger.info("INSIDE IMAGES EXTRACTION — %d image(s)", len(inp_links))
@@ -4043,13 +4103,24 @@ class WorkflowRunnerV2:
                             cand["score"] += confidence
 
                     best = pick_best_artifact(img_candidates)
-                    if best:
+                    canonical = (
+                        canonicalize_artifact_name(best, known_artifact_names)
+                        if best
+                        else None
+                    )
+                    if canonical:
                         entry = evidence_map.setdefault(
-                            best, {"snippets": [], "files": set()}
+                            canonical, {"snippets": [], "files": set()}
                         )
                         entry["snippets"].extend(img_candidates[best]["snippets"])
                         if img_cf_url:
                             entry["files"].add(img_cf_url)
+                    elif best:
+                        self.logger.info(
+                            "Image %d classified as %r which matched no known evidence type",
+                            idx + 1,
+                            best,
+                        )
                 except Exception as e:
                     self.logger.error(
                         "Vision categorization failed for image %d: %s",
@@ -4078,11 +4149,17 @@ class WorkflowRunnerV2:
                 snippets_text = "\n".join(data["snippets"][:5])
                 eval_prompt = (
                     f"ARTIFACT TYPE: {artifact}\n"
-                    f"EXPECTATIONS: {expectations_str}\n\n"
+                    f"WHAT THIS ARTIFACT SHOULD COVER: {expectations_str}\n\n"
                     f"EVIDENCE CONTENT:\n{snippets_text[:3000]}\n\n"
-                    "Does the evidence content actually satisfy these expectations? "
-                    "Be strict — if the content is generic, unrelated, or missing key elements, it fails.\n"
-                    'Return ONLY JSON: {"passes": true, "reason": ""} or {"passes": false, "reason": "<specific reason>"}'
+                    "Decide ONLY whether this document is genuinely of the stated "
+                    "ARTIFACT TYPE and on-topic for it. Judge TYPE/RELEVANCE, NOT "
+                    "completeness: a document of the right type still PASSES even if "
+                    "it omits some of the points above (missing points are handled "
+                    "separately as follow-up questions). FAIL only if the content is "
+                    "clearly a different kind of document or unrelated to this "
+                    "artifact type.\n"
+                    'Return ONLY JSON: {"passes": true, "reason": ""} or '
+                    '{"passes": false, "reason": "<why it is the wrong type / unrelated>"}'
                 )
                 try:
                     resp = await get_fireworks_response2(
@@ -4105,7 +4182,11 @@ class WorkflowRunnerV2:
                     )
 
             if not content_passes:
-                inadmissible_evidence[artifact] = {**data, "reason": rejection_reason}
+                inadmissible_evidence[artifact] = {
+                    **data,
+                    "reason": rejection_reason
+                    or f"Content does not appear to be a valid '{artifact}'.",
+                }
                 continue
 
             if runbook_evidence_config:
@@ -4178,17 +4259,21 @@ class WorkflowRunnerV2:
 
         for q in [q for q in assigned_ques if q.get("id") not in answered_qids]:
             qid = q.get("id")
-            evidence_required = q.get("evidence_required", [])
+            evidence_required = q.get("evidence_required", []) or []
 
-            relevant_evidence = (
-                {
-                    k: admissible_evidence[k]
-                    for k in evidence_required
-                    if k in admissible_evidence
-                }
-                if evidence_required
-                else admissible_evidence
-            )
+            if evidence_required:
+                # Canonicalize each required artifact name so it lines up with the
+                # canonical keys in admissible_evidence (a question asking for
+                # "Access Control Policy" matches a file admitted as "Policies").
+                relevant_evidence = {}
+                for req in evidence_required:
+                    canon_req = (
+                        canonicalize_artifact_name(req, known_artifact_names) or req
+                    )
+                    if canon_req in admissible_evidence:
+                        relevant_evidence[canon_req] = admissible_evidence[canon_req]
+            else:
+                relevant_evidence = admissible_evidence
             if not relevant_evidence:
                 continue
 
@@ -4279,9 +4364,12 @@ class WorkflowRunnerV2:
         expectations_checklists = {}
         for ev_cfg in config_to_check:
             artifact = ev_cfg.get("artifact", "")
-            decision = (
-                ev_cfg.get("decision")
-                if ev_cfg.get("decision") is not None
+            # Canonicalize so it matches the canonical keys in admissible_evidence.
+            artifact = (
+                canonicalize_artifact_name(artifact, known_artifact_names) or artifact
+            )
+            decision = _parse_decision(
+                ev_cfg.get("decision") if ev_cfg.get("decision") is not None
                 else ev_cfg.get("Decision")
             )
             if runbook_evidence_config and decision is False:
@@ -4521,15 +4609,42 @@ class WorkflowRunnerV2:
             len(new_ev_questions),
             list(admissible_evidence.keys()),
         )
+
+        # A human-readable message so the UI never has to show a bare "0
+        # fulfilled" with no explanation.
+        answered_now = len(answers_map)
+        if answered_now:
+            message = (
+                f"Filled {answered_now} question{'s' if answered_now != 1 else ''} "
+                "from your evidence."
+            )
+        elif admissible_overview:
+            message = (
+                "Evidence was accepted ("
+                + ", ".join(o["artifact"] for o in admissible_overview)
+                + ") but it did not answer any of the remaining questions."
+            )
+        elif inadmissible_overview:
+            reasons = "; ".join(
+                f"{o['artifact']}: {o.get('summary') or 'not usable'}"
+                for o in inadmissible_overview[:5]
+            )
+            message = f"No questions were filled — {reasons}"
+        else:
+            message = "No usable evidence was found in the uploaded files."
+
         return {
             "status": "success",
+            "message": message,
             "updated_answers": total_updated,
             "total_questions": len(assigned_ques),
-            "answered_now": len(answers_map),
+            "answered_now": answered_now,
             "remaining_unanswered": len(remaining),
             "evidence_based_questions_added": len(new_ev_questions),
             "admissible_evidence_types": list(admissible_evidence.keys()),
             "inadmissible_evidence_types": list(inadmissible_evidence.keys()),
+            # Rich per-artifact rejection reasons for the UI ({artifact, files, summary}).
+            "inadmissible": inadmissible_overview,
             "questions_needing_evidence": questions_needing_evidence,
         }
 
