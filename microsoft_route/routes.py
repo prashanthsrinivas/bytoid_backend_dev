@@ -511,7 +511,16 @@ def microsoft_login():
 
 
 @microsoft_bp.route("/auth/microsoft/callback", methods=["GET"])
-async def microsoft_callback():
+def microsoft_callback():
+    # Sync route: a direct hit without an OAuth code/error (not a real callback)
+    # returns a clean 400 synchronously, so this path never depends on async view
+    # dispatch. Real callbacks delegate to the async impl below via asyncio.run.
+    if not request.args.get("code") and not request.args.get("error"):
+        return jsonify({"error": "Missing OAuth authorization code"}), 400
+    return asyncio.run(_microsoft_callback_impl())
+
+
+async def _microsoft_callback_impl():
     """Simple Microsoft callback - like Google oauth2callback"""
 
     try:
@@ -520,10 +529,6 @@ async def microsoft_callback():
         state = request.args.get("state")
         newuser = None
         user_type = None
-
-        # Direct hit without an OAuth code/error (not a real callback) → clean 400.
-        if not auth_code and not error:
-            return jsonify({"error": "Missing OAuth authorization code"}), 400
 
         if error:
             logger.error(f"❌ OAuth error: {error}")

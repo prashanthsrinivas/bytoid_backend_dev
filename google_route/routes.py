@@ -587,7 +587,19 @@ async def user_alive():
 
 
 @google_bp.route("/browser_url", methods=["POST"])
-async def receive_browser_url():
+def receive_browser_url():
+    # Sync route: validate synchronously (so this path never depends on async
+    # view dispatch), then run the async OAuth work via asyncio.run for real
+    # requests. The original async logic is preserved verbatim below.
+    import asyncio
+
+    data = request.get_json(silent=True) or {}
+    if not data.get("url") or not data.get("state"):
+        return jsonify({"error": "url and state are required"}), 400
+    return asyncio.run(_receive_browser_url_impl())
+
+
+async def _receive_browser_url_impl():
     try:
         data = request.get_json(silent=True) or {}
         browser_url = data.get("url")
