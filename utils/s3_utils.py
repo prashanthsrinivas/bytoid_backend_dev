@@ -9,12 +9,105 @@ import yaml
 import io
 from utils.base_logger import get_logger
 from werkzeug.utils import secure_filename
-from utils.app_configs import IS_DEV
+from utils.app_configs import IS_DEV, PROD_ORIGINS, STAGING_ORIGINS, DEV_ORIGINS
 
 load_dotenv()
 S3_BUCKET = os.getenv("S3_BUCKET")
 S3_REGION = os.getenv("S3_REGION")
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------
+# BUCKET CORS (browser presigned upload/download)
+# ---------------------------------------------------
+def cors_allowed_origins():
+    """Scheme-qualified frontend origins for the bucket CORS document.
+
+    S3 ``AllowedOrigins`` must be ``scheme://host`` — bare hostnames like
+    ``demo.bytoid.ai`` are dropped. All environments are unioned so one
+    document serves dev, staging and prod frontends.
+    """
+    origins = PROD_ORIGINS | STAGING_ORIGINS | DEV_ORIGINS
+    return sorted(
+        o.rstrip("/")
+        for o in origins
+        if o.startswith("http://") or o.startswith("https://")
+    )
+
+
+def build_cors_config():
+    """Canonical CORS document for the uploads bucket.
+
+    The browser SPA receives a presigned ``put_object`` URL (``/make_s3upload``)
+    and PUTs the file straight to S3. A PUT carrying ``Content-Type`` is not a
+    CORS "simple request", so the browser sends a preflight ``OPTIONS`` first;
+    without this configuration S3 rejects it and the upload fails with
+    ``TypeError: Failed to fetch``. ``GET``/``HEAD`` cover presigned downloads
+    and ``FilePreview``.
+    """
+    return {
+        "CORSRules": [
+            {
+                "AllowedOrigins": cors_allowed_origins(),
+                "AllowedMethods": ["GET", "PUT", "HEAD"],
+                "AllowedHeaders": ["*"],
+                "ExposeHeaders": ["ETag"],
+                "MaxAgeSeconds": 3600,
+            }
+        ]
+    }
+
+
+def ensure_bucket_cors(bucket=None):
+    """Idempotently apply the SPA CORS policy to the uploads bucket.
+
+    Called once at startup so a freshly-provisioned bucket self-heals on
+    deploy instead of depending on someone remembering to run
+    ``scripts/set_s3_cors.py``. Skips the write when the bucket already has the
+    desired rules, and never raises — a missing ``s3:PutBucketCORS`` permission
+    or transient S3 error is logged and swallowed so it can't block boot.
+
+    Returns ``True`` when the bucket ends up with the desired CORS, else ``False``.
+    """
+    bucket = bucket or S3_BUCKET
+    if not bucket:
+        logger.warning("ensure_bucket_cors: S3_BUCKET not set; skipping.")
+        return False
+
+    desired = build_cors_config()["CORSRules"]
+    s3 = s3bucket()
+
+    try:
+        current = s3.get_bucket_cors(Bucket=bucket).get("CORSRules", [])
+        if current == desired:
+            logger.info("Bucket %s already has the expected CORS; skipping.", bucket)
+            return True
+    except ClientError as e:
+        # NoSuchCORSConfiguration (none yet) is expected; AccessDenied on the
+        # read just means we can't compare — fall through and try to write.
+        code = e.response.get("Error", {}).get("Code")
+        if code not in ("NoSuchCORSConfiguration", "AccessDenied"):
+            logger.warning("ensure_bucket_cors: get_bucket_cors on %s failed: %s", bucket, e)
+
+    try:
+        s3.put_bucket_cors(
+            Bucket=bucket, CORSConfiguration={"CORSRules": desired}
+        )
+        logger.info(
+            "Applied CORS to bucket %s for %d origin(s).",
+            bucket,
+            len(desired[0]["AllowedOrigins"]),
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            "ensure_bucket_cors: could not apply CORS to %s (%s). "
+            "Browser uploads will fail until the bucket has CORS; apply it with "
+            "credentials that hold s3:PutBucketCORS (scripts/set_s3_cors.py).",
+            bucket,
+            e,
+        )
+        return False
 
 
 def s3bucket():

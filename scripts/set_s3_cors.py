@@ -37,36 +37,10 @@ import sys
 # Make the repo root importable when run as ``python scripts/set_s3_cors.py``.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.app_configs import DEV_ORIGINS, PROD_ORIGINS, STAGING_ORIGINS
-from utils.s3_utils import s3bucket
-
-
-def _allowed_origins() -> list[str]:
-    """Full scheme+host origins for the CORS document.
-
-    S3 ``AllowedOrigins`` must be scheme-qualified (``https://host``); bare
-    hostnames such as ``demo.bytoid.ai`` are dropped. All environments are
-    unioned so a single document serves dev, staging and prod frontends.
-    """
-    origins = PROD_ORIGINS | STAGING_ORIGINS | DEV_ORIGINS
-    scheme_qualified = sorted(
-        o.rstrip("/") for o in origins if o.startswith("http://") or o.startswith("https://")
-    )
-    return scheme_qualified
-
-
-def build_cors_config() -> dict:
-    return {
-        "CORSRules": [
-            {
-                "AllowedOrigins": _allowed_origins(),
-                "AllowedMethods": ["GET", "PUT", "HEAD"],
-                "AllowedHeaders": ["*"],
-                "ExposeHeaders": ["ETag"],
-                "MaxAgeSeconds": 3600,
-            }
-        ]
-    }
+# The CORS document is defined once in utils.s3_utils so the app's startup
+# self-heal (utils.s3_utils.ensure_bucket_cors) and this manual script can
+# never drift apart.
+from utils.s3_utils import build_cors_config, s3bucket
 
 
 def main() -> int:

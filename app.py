@@ -517,4 +517,13 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=3000)
     args = parser.parse_args()
 
+    # Prod runs under gunicorn (see gunicorn.conf.py on_starting); mirror that
+    # self-heal here so local `python app.py` also keeps the bucket CORS current.
+    try:
+        from utils.s3_utils import ensure_bucket_cors
+
+        ensure_bucket_cors()
+    except Exception as e:
+        get_logger("api").warning("ensure_bucket_cors failed at dev startup: %s", e)
+
     app.run(host=args.host, port=args.port, debug=True)
