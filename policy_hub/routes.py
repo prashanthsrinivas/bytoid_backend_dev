@@ -53,7 +53,13 @@ from policy_hub.doc_types import (
 )
 from policy_hub.workflow_autosubmit import auto_submit_policy
 from workflow_route.state_machine import get_user_org_id
-from utils.fireworkzz import get_fireworks_response2, get_firework_embedding
+from utils.fireworkzz import (
+    get_fireworks_response2,
+    get_firework_embedding,
+    get_think_fire_response2_og,
+    extract_json_safe,
+    GUARDRAIL_BLOCKED,
+)
 from utils.s3_utils import (
     s3bucket,
     load_yaml_from_s3,
@@ -3793,7 +3799,20 @@ def _parse_framework_file(file_bytes: bytes, filename: str) -> list[dict]:
 
 
 async def _async_index_framework(framework_id: str, rows: list[dict]):
-    """Embed every row and upsert into LanceDB index_frameworks table."""
+    """Re-index a framework in LanceDB: drop its existing vectors, then embed and
+    insert the current rows. Delete-then-insert keeps edits/updates idempotent so
+    repeated saves don't pile up stale duplicate vectors."""
+    # Always clear prior vectors first — even when there are no rows to insert
+    # (e.g. an update that emptied the table) — so the index reflects the save.
+    try:
+        await LanceDBServer().delete_folder_async(FRAMEWORK_LANCE_USER, framework_id)
+    except Exception as e:
+        logger.error(
+            "LanceDB delete-before-reindex failed for framework %s: %s",
+            framework_id,
+            e,
+        )
+
     texts = []
     for row in rows:
         parts = [
@@ -4000,11 +4019,21 @@ def save_framework():
     rows = body.get("rows")
     source_filename = body.get("source_filename", "")
     framework_id = body.get("framework_id") or str(uuid.uuid4())
+    # Provenance: "upload" (default), "ai" (Kimi-generated), or "manual".
+    source = body.get("source") or "upload"
+    ai_generated = bool(body.get("ai_generated", False))
 
     if not name:
         return jsonify({"error": "Framework name is required"}), 400
     if not isinstance(rows, list):
         return jsonify({"error": "rows must be a list"}), 400
+
+    # Prefer an explicit column order from the client (preserves added columns
+    # and column order even when the first row is empty); fall back to deriving
+    # from the first row for legacy callers.
+    columns = body.get("columns")
+    if not isinstance(columns, list) or not columns:
+        columns = list(rows[0].keys()) if rows else []
 
     now = datetime.now(timezone.utc).isoformat()
     key = _fw_key(framework_id)
@@ -4015,8 +4044,10 @@ def save_framework():
         "name": name,
         "source_filename": source_filename,
         "rows": rows,
-        "columns": list(rows[0].keys()) if rows else [],
+        "columns": columns,
         "row_count": len(rows),
+        "source": source,
+        "ai_generated": ai_generated,
         "created_at": existing["created_at"] if existing else now,
         "updated_at": now,
     }
@@ -4035,6 +4066,161 @@ def save_framework():
     ).start()
 
     return jsonify({"framework": record}), 200
+
+
+# Default columns for an AI-generated framework draft. The model is asked to
+# return these keys; we fall back to the union of keys it actually emitted.
+_AI_FRAMEWORK_COLUMNS = ["Reference", "Domain", "Control", "Description"]
+
+
+def _build_framework_prompt(name: str) -> str:
+    """Strict-JSON prompt asking Kimi for a framework's control set."""
+    cols = json.dumps(_AI_FRAMEWORK_COLUMNS)
+    return (
+        "You are a cybersecurity compliance expert. Produce the official "
+        "control / requirement set for the framework named below as structured "
+        "data.\n\n"
+        f'Framework: "{name}"\n\n'
+        "Return ONLY valid JSON (no prose, no markdown fences) in exactly this "
+        "shape:\n"
+        "{\n"
+        f'  "columns": {cols},\n'
+        '  "rows": [\n'
+        '    {"Reference": "...", "Domain": "...", "Control": "...", "Description": "..."}\n'
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        '- "Reference" = the official clause / control identifier using the '
+        'exact numbering scheme of the framework (e.g. "A.5.1", "1.2.3", "AC-2").\n'
+        '- "Domain" = the section / category / family the control belongs to.\n'
+        '- "Control" = the short control title or name.\n'
+        '- "Description" = the requirement text, summarised faithfully WITHOUT '
+        "inventing requirements.\n"
+        "- Every row MUST contain exactly the keys listed in \"columns\".\n"
+        "- Use the real, well-known structure of the framework. Do NOT fabricate "
+        "controls that are not part of the standard; if unsure of an exact "
+        "clause, omit it rather than invent it.\n"
+        "- Cover the framework as completely as you can."
+    )
+
+
+def _normalize_ai_framework(parsed) -> tuple[list[str], list[dict]]:
+    """Coerce the model's JSON into (columns, rows) matching the upload-preview
+    shape. Accepts either {"columns": [...], "rows": [...]} or a bare list of
+    row dicts. Values are stringified; empty rows are dropped."""
+    if isinstance(parsed, dict):
+        raw_rows = parsed.get("rows")
+        columns = parsed.get("columns")
+    elif isinstance(parsed, list):
+        raw_rows = parsed
+        columns = None
+    else:
+        return [], []
+
+    if not isinstance(raw_rows, list):
+        return [], []
+
+    # Determine column order: model-provided columns first, then any extra keys
+    # the rows actually contain (preserving first-seen order).
+    ordered_cols: list[str] = []
+    if isinstance(columns, list):
+        ordered_cols = [str(c) for c in columns if c is not None and str(c).strip()]
+    for row in raw_rows:
+        if isinstance(row, dict):
+            for k in row.keys():
+                key = str(k)
+                if key not in ordered_cols:
+                    ordered_cols.append(key)
+    if not ordered_cols:
+        ordered_cols = list(_AI_FRAMEWORK_COLUMNS)
+
+    def _cell(v):
+        if v is None:
+            return None
+        if isinstance(v, (dict, list)):
+            return json.dumps(v, ensure_ascii=False)
+        s = str(v).strip()
+        return s or None
+
+    rows: list[dict] = []
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        norm = {col: _cell(row.get(col)) for col in ordered_cols}
+        if any(v is not None for v in norm.values()):
+            rows.append(norm)
+
+    return ordered_cols, rows
+
+
+@policy_hub_bp.route("/frameworks/generate", methods=["POST"])
+@permission_required_body("policyhub.framework.create")
+async def generate_framework():
+    """Draft a framework's control set with Kimi 2.5 and return it as an unsaved
+    preview (same shape as /frameworks/upload). Nothing is persisted — the user
+    reviews/edits the AI draft in the editable table, then calls /frameworks/save."""
+    denied = _require_framework_owner()
+    if denied:
+        return denied
+
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Framework name is required"}), 400
+    if len(name) > 200:
+        return jsonify({"error": "Framework name is too long"}), 400
+
+    user_id = (
+        getattr(g, "user_id", None)
+        or getattr(g, "session_user_id", None)
+        or body.get("user_id")
+        or request.args.get("user_id")
+    )
+    if not user_id:
+        return jsonify({"error": "Unauthorized"}), 401
+    _, user_id = parse_composite_user_id(user_id)
+
+    prompt = _build_framework_prompt(name)
+
+    try:
+        response = await get_think_fire_response2_og(prompt, user_id, Credits())
+    except Exception as e:
+        logger.error("Framework AI generation failed for %r: %s", name, e)
+        return jsonify({"error": "AI generation failed. Please try again."}), 502
+
+    if response == "INSUFFICIENT":
+        return jsonify({"error": "Insufficient AI credits"}), 402
+    if isinstance(response, str) and response.startswith(GUARDRAIL_BLOCKED):
+        return jsonify({"error": response}), 403
+    if not response:
+        return jsonify({"error": "The AI returned an empty response. Please try again."}), 502
+
+    parsed = extract_json_safe(response)
+    columns, rows = _normalize_ai_framework(parsed)
+    if not rows:
+        logger.warning("Framework AI generation produced no usable rows for %r", name)
+        return (
+            jsonify(
+                {
+                    "error": "Could not generate a framework for that name. "
+                    "Try a more specific name or upload a file instead."
+                }
+            ),
+            502,
+        )
+
+    return (
+        jsonify(
+            {
+                "rows": rows,
+                "columns": columns,
+                "row_count": len(rows),
+                "source_filename": f"AI · {name}",
+                "ai_generated": True,
+            }
+        ),
+        200,
+    )
 
 
 @policy_hub_bp.route("/frameworks/search", methods=["GET"])

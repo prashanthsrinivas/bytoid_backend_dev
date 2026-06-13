@@ -5,7 +5,6 @@ importing so the tests run in any environment that has pandas, pymysql, and
 the standard pure-Python deps installed.
 """
 
-import json
 import sys
 import types
 from unittest.mock import MagicMock
@@ -33,7 +32,12 @@ def routes_module():
         if k == "policy_hub.routes":
             sys.modules.pop(k, None)
             continue
-        sys.modules[k] = types.ModuleType(k)
+        mod = types.ModuleType(k)
+        # PEP 562 fallback: any symbol not set explicitly below resolves to a
+        # MagicMock, so transitively-imported names (S3_BUCKET, IS_DEV, …) pulled
+        # in by other policy_hub submodules don't break the import in isolation.
+        mod.__getattr__ = lambda name, _n=k: MagicMock(name=f"{_n}.{name}")
+        sys.modules[k] = mod
 
     sys.modules["pymysql.cursors"].DictCursor = MagicMock()
     sys.modules["db.rds_db"].connect_to_rds = MagicMock(return_value=None)
@@ -43,7 +47,10 @@ def routes_module():
     sys.modules["credits_route.route"].Credits = MagicMock()
     sys.modules["utils.fireworkzz"].get_fireworks_response2 = MagicMock()
     sys.modules["utils.fireworkzz"].get_firework_embedding = MagicMock()
-    for sym in ("s3bucket", "load_yaml_from_s3", "read_json_from_s3",
+    sys.modules["utils.fireworkzz"].get_think_fire_response2_og = MagicMock()
+    sys.modules["utils.fireworkzz"].extract_json_safe = MagicMock()
+    sys.modules["utils.fireworkzz"].GUARDRAIL_BLOCKED = "BLOCKED_BY_GUARDRAIL"
+    for sym in ("S3_BUCKET", "s3bucket", "load_yaml_from_s3", "read_json_from_s3",
                 "delete_file_from_s3", "list_all_files"):
         setattr(sys.modules["utils.s3_utils"], sym, MagicMock())
     for sym in ("check_role_has_permission", "core_assign_resource",

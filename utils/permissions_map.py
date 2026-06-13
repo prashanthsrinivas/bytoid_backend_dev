@@ -177,4 +177,10 @@ PERMISSIONS = {
     "policyhub.framework.create": "Upload Frameworks",
     "policyhub.framework.delete": "Delete Frameworks",
     "policyhub.framework.view": "View Frameworks",
+    # ================= STRATEGY GOVERNANCE =================
+    "strategy.view": "View Strategy",
+    "strategy.create": "Create Strategy Items",
+    "strategy.edit": "Edit Strategy Items",
+    "strategy.assign_owner": "Assign Strategy Owner",
+    "strategy.delete": "Delete Strategy Items",
 }
