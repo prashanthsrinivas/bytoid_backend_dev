@@ -614,13 +614,15 @@ def generate_entity_groups(pii_mapping):
 async def search_emails(text_input=None, user_id=None):
     try:
 
-        conn = connect_to_rds()
-        cursor = conn.cursor()
-
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         text_input = data.get("text_input", "")
         user_query = text_input
         user_id = data.get("user_id")
+        if not user_id or not text_input:
+            return jsonify({"error": "user_id and text_input are required"}), 400
+
+        conn = connect_to_rds()
+        cursor = conn.cursor()
 
         name_resolved = False
         folder_names = None

@@ -521,6 +521,10 @@ async def microsoft_callback():
         newuser = None
         user_type = None
 
+        # Direct hit without an OAuth code/error (not a real callback) → clean 400.
+        if not auth_code and not error:
+            return jsonify({"error": "Missing OAuth authorization code"}), 400
+
         if error:
             logger.error(f"❌ OAuth error: {error}")
             return redirect(f"{frontend_url}/login?error={error}")
@@ -3514,7 +3518,7 @@ def check_microsoft_user():
 def get_microsoft_client_id():
     """Get Microsoft client ID - similar to Gmail's get_google_client_id"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         secretkey = data.get("secretkey", "")
 
         microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID")
@@ -3528,7 +3532,8 @@ def get_microsoft_client_id():
             )
 
         if not microsoft_client_id:
-            return jsonify({"error": "Missing MICROSOFT_CLIENT_ID"}), 500
+            # Integration not configured on this environment — client error, not 5xx.
+            return jsonify({"error": "Microsoft integration is not configured"}), 400
 
         response_data = {
             "status": "success",

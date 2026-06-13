@@ -469,7 +469,7 @@ def delete_contacts():
         baseuser = data.get("user_id")
         client_ids = data.get("contact_ids")  # list
 
-        if not user_id:
+        if not baseuser:
             return jsonify({"error": "user_id is required"}), 400
         if not client_ids or not isinstance(client_ids, list):
             return jsonify({"error": "client_ids must be a list"}), 400

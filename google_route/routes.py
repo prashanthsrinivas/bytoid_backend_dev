@@ -102,10 +102,12 @@ from db.db_checkers import make_api_key
 
 
 @google_bp.route("/oauth2callback")
-def oauth2callback(url, state):
-
-    if not state:
-        return "Missing state in URL", 400
+def oauth2callback(url=None, state=None):
+    # Also called internally by /browser_url with (url, state). When hit directly
+    # as a route, Flask supplies no args → the defaults make it return a clean 400
+    # instead of crashing with a TypeError.
+    if not url or not state:
+        return "Missing url/state in URL", 400
 
     # OPTIONAL SECURITY CHECK
     session_state = session.get("state")
@@ -587,8 +589,10 @@ async def user_alive():
 @google_bp.route("/browser_url", methods=["POST"])
 async def receive_browser_url():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         browser_url = data.get("url")
+        if not browser_url or not data.get("state"):
+            return jsonify({"error": "url and state are required"}), 400
         state = session.get("state", data["state"])
 
         # This function should return the user ID (e.g., Google account ID)
@@ -755,6 +759,11 @@ async def receive_browser_url():
 
 @google_bp.route("/sync-drive")
 def sync_drive():
+    # GoogleAuth.LocalWebserverAuth() below is an INTERACTIVE desktop OAuth flow:
+    # it spins up a local webserver and blocks the request waiting for a browser,
+    # so on a server it hangs until the request times out. Drive access uses the
+    # OAuth callback flow instead — this endpoint is not usable server-side.
+    return jsonify({"error": "Drive sync is not available via this endpoint"}), 400
     try:
         # user_id = session.get('user_id')
         ga = GoogleAuth()

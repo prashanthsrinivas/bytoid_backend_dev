@@ -284,15 +284,18 @@ def transcription_complete():
 
 @twilio_bp.route("/make-call", methods=["GET"])
 def make_call():
-    call = client.calls.create(
-        to="+829953540",  # Replace with the recipient's phone number
-        from_="+15017122661",
-        twiml="<Response><Say>Hello, this call is recorded.</Say></Response>",
-        record=True,
-        recording_status_callback="https://yourdomain.com/recording-events",
-        recording_status_callback_event=["completed"],
-    )
-    return f"Call initiated. Call SID: {call.sid}"
+    try:
+        call = client.calls.create(
+            to="+829953540",  # Replace with the recipient's phone number
+            from_="+15017122661",
+            twiml="<Response><Say>Hello, this call is recorded.</Say></Response>",
+            record=True,
+            recording_status_callback="https://yourdomain.com/recording-events",
+            recording_status_callback_event=["completed"],
+        )
+        return f"Call initiated. Call SID: {call.sid}"
+    except Exception:
+        return jsonify({"error": "Calling is not configured/available"}), 400
 
 
 # getting messages from slack

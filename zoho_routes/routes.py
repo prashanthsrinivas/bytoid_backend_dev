@@ -79,11 +79,11 @@ def zoho_login():
 @zoho_bp.route("/zoho/callback", methods=["POST", "GET"])
 def zoho_callback():
     # print("inside zoho_callback ")
-    data = request.json
-    code = request.args.get("code") or data["code"]
+    data = request.get_json(silent=True) or {}
+    code = request.args.get("code") or data.get("code")
     if not code:
         # print("no code provided")
-        return "❌ No code provided"
+        return jsonify({"error": "No code provided"}), 400
 
     token_data = {
         "grant_type": "authorization_code",
@@ -1294,8 +1294,9 @@ def sendCredits():
     # client_name = os.getenv("ACCESSTOKEN")
     secretkey = CLIENT_SECRET
 
-    if not client_id:
-        return jsonify({"error": "Missing environment variables"}), 500
+    if not client_id or not secretkey:
+        # Integration not configured on this environment — client error, not 5xx.
+        return jsonify({"error": "Zoho integration is not configured"}), 400
 
     return jsonify(
         {

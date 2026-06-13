@@ -2380,7 +2380,10 @@ def validate_invite(token):
         return jsonify({"error": "Token is required"}), 400
 
     try:
-        invited_by, invited_to, expiry = dehashed_url(token)
+        try:
+            invited_by, invited_to, expiry = dehashed_url(token)
+        except Exception:
+            return jsonify({"error": "Invalid or malformed invite token"}), 400
         # print(invited_by, invited_to, expiry)
 
         conn = connect_to_rds()

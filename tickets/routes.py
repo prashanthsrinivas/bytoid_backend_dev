@@ -22,6 +22,8 @@ def get_user_tickets(user_id):
 
         page_size = int(request.args.get("page_size", 10))
         last_updated_in = request.args.get("last_updated_in")
+        if not last_updated_in:
+            return jsonify({"error": "last_updated_in is required"}), 400
         last_updated_in = last_updated_in.replace("T", " ")
         total_count_done = (
             request.args.get("total_count_done", "false").lower() == "true"
@@ -195,6 +197,8 @@ def filter_tickets(user_id):
         channel = request.args.get("channel")
         page_size = int(request.args.get("page_size", 10))
         last_updated_in = request.args.get("last_updated_in")
+        if not last_updated_in:
+            return jsonify({"error": "last_updated_in is required"}), 400
         last_updated_in = last_updated_in.replace("T", " ")
 
         #print(f"****dates: {last_updated_in} : {start_date} : {end_date}")
@@ -360,6 +364,8 @@ def search_tickets(user_id):
         search_pattern = f"%{search_word}%"
         page_size = int(request.args.get("page_size", 10))
         last_updated_in = request.args.get("last_updated_in")
+        if not last_updated_in:
+            return jsonify({"error": "last_updated_in is required"}), 400
         last_updated_in = last_updated_in.replace("T", " ")
 
         conn = connect_to_rds()

@@ -374,8 +374,8 @@ def checkquerywithApiKeyog():
     try:
         # print("Query made by:", session.get("user", {}))
 
-        data = request.json
-        querytext = data.get("query", "").strip()
+        data = request.get_json(silent=True) or {}
+        querytext = (data.get("query") or "").strip()
         api_key = data.get("api_key")
         if not api_key:
             return jsonify({"error": "API key is required"}), 400
@@ -1552,15 +1552,18 @@ async def get_ai_suggestion():
 @permission_required_body("intake.bytoid_support")
 def create_sub_ticket():
     try:
-        data = request.json
+        data = request.get_json(silent=True) or {}
         communication_id = data.get("communication_id")
         priority = data.get("priority")
         status = data.get("status")
+        if not communication_id:
+            return jsonify({"error": "communication_id is required"}), 400
         tick = create_ticket_Communication_assigned(
             communication_id=communication_id, priority=priority, status=status
         )
         if tick:
             return {"message": "created ticket successfully"}, 200
+        return jsonify({"error": "Could not create ticket"}), 400
     except Exception as e:
         return jsonify({"error": f"Internal server error {e}"}), 500
 

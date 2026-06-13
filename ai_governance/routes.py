@@ -156,19 +156,22 @@ def langfuse_traces():
 @ai_governance_required(tier="superuser")
 def langfuse_score():
     """Post a manual evaluation score to a Langfuse trace."""
-    from ai_governance.clients.langfuse_client import get_langfuse, is_configured
+    try:
+        from ai_governance.clients.langfuse_client import get_langfuse, is_configured
+    except Exception:
+        return jsonify({"available": False, "error": "Langfuse observability is not configured"}), 200
 
     if not is_configured():
-        return jsonify({"error": "Langfuse not configured"}), 503
+        return jsonify({"available": False, "error": "Langfuse observability is not configured"}), 200
 
-    data = request.get_json(force=True) or {}
+    data = request.get_json(silent=True) or {}
     required = {"trace_id", "name", "value"}
     if not required.issubset(data):
         return jsonify({"error": f"Required fields: {required}"}), 400
 
     lf = get_langfuse()
     if lf is None:
-        return jsonify({"error": "Langfuse client failed to initialise"}), 503
+        return jsonify({"available": False, "error": "Langfuse client failed to initialise"}), 200
 
     lf.score(
         trace_id=data["trace_id"],
@@ -529,23 +532,26 @@ def scan_run_users(run_id):
 @ai_governance_required(tier="superuser")
 def trulens_feedback():
     """Record a TruLens feedback score."""
-    from ai_governance.clients.giskard_client import get_trulens_session
-    from trulens.core.schema import feedback as tl_feedback
-
-    data = request.get_json(force=True) or {}
+    data = request.get_json(silent=True) or {}
     required = {"app_id", "record_id", "feedback_name", "result"}
     if not required.issubset(data):
         return jsonify({"error": f"Required fields: {required}"}), 400
 
-    session = get_trulens_session()
-    session.add_feedback(
-        tl_feedback.FeedbackResult(
-            feedback_definition_id=data["feedback_name"],
-            record_id=data["record_id"],
-            result=float(data["result"]),
-            status=tl_feedback.FeedbackResultStatus.done,
+    try:
+        from ai_governance.clients.giskard_client import get_trulens_session
+        from trulens.core.schema import feedback as tl_feedback
+
+        session = get_trulens_session()
+        session.add_feedback(
+            tl_feedback.FeedbackResult(
+                feedback_definition_id=data["feedback_name"],
+                record_id=data["record_id"],
+                result=float(data["result"]),
+                status=tl_feedback.FeedbackResultStatus.done,
+            )
         )
-    )
+    except Exception:
+        return jsonify({"available": False, "error": "TruLens is not configured"}), 200
     _audit(AI_TRULENS_FEEDBACK_POSTED, metadata={"record_id": data["record_id"]})
     return jsonify({"status": "recorded"})
 
@@ -554,12 +560,15 @@ def trulens_feedback():
 @ai_governance_required(tier="superuser")
 def trulens_leaderboard():
     """Fetch the TruLens app leaderboard."""
-    from ai_governance.clients.giskard_client import get_trulens_session
+    try:
+        from ai_governance.clients.giskard_client import get_trulens_session
 
-    session = get_trulens_session()
-    lb = session.get_leaderboard()
+        session = get_trulens_session()
+        lb = session.get_leaderboard()
+    except Exception:
+        return jsonify({"available": False, "leaderboard": []}), 200
     _audit(AI_TRULENS_LEADERBOARD_READ)
-    return jsonify({"leaderboard": lb.to_dict(orient="records") if hasattr(lb, "to_dict") else []})
+    return jsonify({"available": True, "leaderboard": lb.to_dict(orient="records") if hasattr(lb, "to_dict") else []})
 
 
 # ── DeepEval ──────────────────────────────────────────────────────────────────

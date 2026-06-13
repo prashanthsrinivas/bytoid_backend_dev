@@ -1030,20 +1030,22 @@ def edit_website_summary():
     }
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         api_key = data.get("api_key")
         url = data.get("url")
-        edited_summary = secure_kms.encrypt(user_id, data.get("edited_summary", ""))
+        edited_summary_text = data.get("edited_summary", "")
 
         if not api_key or not url:
             return jsonify({"error": "api_key and url are required"}), 400
 
-        if not edited_summary:
+        if not edited_summary_text:
             return jsonify({"error": "edited_summary is required"}), 400
 
         user_id = fetch_userid_from_launch(api_key)
         if not user_id:
             return jsonify({"error": "Invalid API Key"}), 401
+
+        edited_summary = secure_kms.encrypt(user_id, edited_summary_text)
 
         if not check_userid_valid(user_id):
             return jsonify({"error": "Invalid access"}), 404
@@ -1118,21 +1120,23 @@ def edit_website_summary():
 def edit_internal_link_summary():
     """ """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         api_key = data.get("api_key")
         url = data.get("url")
         internal_link = data.get("internal_link")
-        edited_summary = secure_kms.encrypt(user_id, data.get("edited_summary", ""))
+        edited_summary_text = data.get("edited_summary", "")
 
         if not api_key or not url:
             return jsonify({"error": "api_key and url are required"}), 400
 
-        if not edited_summary:
+        if not edited_summary_text:
             return jsonify({"error": "edited_summary is required"}), 400
 
         user_id = fetch_userid_from_launch(api_key)
         if not user_id:
             return jsonify({"error": "Invalid API Key"}), 401
+
+        edited_summary = secure_kms.encrypt(user_id, edited_summary_text)
 
         if not check_userid_valid(user_id):
             return jsonify({"error": "Invalid access"}), 404
@@ -1655,9 +1659,11 @@ def update_contacts_scraped():
 @permission_required_body("kb.web.view")
 @scrape_agent_bps.route("/check-scrape-check", methods=["POST"])
 async def check_scrape_base():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     userid = data.get("user_id")
     question = data.get("query")
+    if not userid or not question:
+        return jsonify({"error": "user_id and query are required"}), 400
     service = LanceClient(user_id=userid)
     query_input = QueryInput(user_id=userid, query_text=question, top_k=3)
     vector = service.embeddings.embed_query(question)

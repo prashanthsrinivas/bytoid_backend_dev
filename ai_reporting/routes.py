@@ -2245,13 +2245,15 @@ async def post_calrify_with_user(
 
 @ai_reporting_bp.route("/post_clarifications", methods=["POST"])
 async def post_clarifications():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     clarifications = data.get("clarifications", "")
     original_query = data.get("original_query", "")
     user_edit = data.get("user_edit")
     user_satisfied = data.get("user_satisfied")
     user_id = data.get("user_id")
     system_query = data.get("system_query", "")
+    if not user_id or not original_query:
+        return jsonify({"error": "user_id and original_query are required"}), 400
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     # print(f"clarifications : {clarifications}")
@@ -2300,24 +2302,28 @@ async def finalize_report():
 
 
 @ai_reporting_bp.route("/list_all_draft_reports", methods=["POST"])
-async def list_all_draft_reports(client, user_id):
-    """
-    Retrieve all draft reports for a user from Redis.
-    Prints each report_id and its content.
-    """
-    key = f"user:{user_id}:draft_reports"
-    all_reports = await client.hgetall(key)
-    logged_in_user_id, user_id = parse_composite_user_id(user_id)
+async def list_all_draft_reports():
+    """Retrieve all draft reports for a user from Redis."""
+    data = request.get_json(silent=True) or {}
+    raw_user_id = data.get("user_id") or request.args.get("user_id")
+    if not raw_user_id:
+        return jsonify({"error": "user_id is required"}), 400
+    logged_in_user_id, user_id = parse_composite_user_id(raw_user_id)
 
-    if not all_reports:
-        # print(f"No draft reports found for user {user_id}")
-        return
-
-    # print(f"Draft reports for user {user_id}:")
-    for report_id, report_json in all_reports.items():
-        report_data = json.loads(report_json)
-    # print(f"- Report ID: {report_id}")
-    # print(f"  Content: {json.dumps(report_data, indent=2)}\n")
+    try:
+        client = get_redis()
+        key = f"user:{user_id}:draft_reports"
+        all_reports = await client.hgetall(key)
+        reports = []
+        for report_id, report_json in (all_reports or {}).items():
+            try:
+                reports.append(json.loads(report_json))
+            except (TypeError, ValueError):
+                continue
+        return jsonify({"reports": reports}), 200
+    except Exception as e:
+        logger.error("list_all_draft_reports failed for %s: %s", user_id, e)
+        return jsonify({"error": "Could not load draft reports"}), 500
 
 
 def append_revision_entries_to_report(owner_id, report_id, entries, only_if_empty=False):
@@ -2472,10 +2478,12 @@ def apply_publication_to_report(
 
 @ai_reporting_bp.route("/change_name", methods=["POST"])
 async def change_name():
-    data = request.get_json()
-    name = data.get("name", "").strip()
-    report_id = data.get("report_id", "").strip()
-    user_id = data.get("user_id", "").strip()
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    report_id = (data.get("report_id") or "").strip()
+    user_id = (data.get("user_id") or "").strip()
+    if not name or not report_id or not user_id:
+        return jsonify({"error": "name, report_id, and user_id are required"}), 400
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     # client = await GlideClusterClient.create(redis_config_glide)
@@ -2618,9 +2626,15 @@ async def set_special_access():
 
 @ai_reporting_bp.route("/change_name_test", methods=["POST"])
 def change_name_test():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     query = data.get("mysql_query", "")
-    new_query_obfuscated_replaced = replace_obfuscated_names(query, name_map)
+    if not query:
+        return jsonify({"error": "mysql_query is required"}), 400
+    try:
+        new_query_obfuscated_replaced = replace_obfuscated_names(query, name_map)
+    except Exception as e:
+        logger.error("change_name_test failed: %s", e)
+        return jsonify({"error": "Could not process query"}), 400
     return new_query_obfuscated_replaced
 
 

@@ -2266,12 +2266,16 @@ def start_gmail_watches():
     results = []
     for row in rows:
         user_id = row[0]
-        service = GmailService(user_id)
-        res = service.create_watch_req(user_id)
-        results.append({"user_id": user_id, "result": res})
+        try:
+            service = GmailService(user_id)
+            res = service.create_watch_req(user_id)
+            results.append({"user_id": user_id, "result": res})
+        except Exception as e:
+            logger.warning("start_gmail_watches: watch setup failed for %s: %s", user_id, e)
+            results.append({"user_id": user_id, "error": str(e)})
+    return jsonify(results)
 
 
-#     return jsonify(results)
 @permission_required_body("taskbox.email.view")
 @gmail_bp.route("/gmail/history_check/<userid>/<hisid>", methods=["GET"])
 def histcheckmail(userid, hisid):

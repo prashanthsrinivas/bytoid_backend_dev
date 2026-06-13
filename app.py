@@ -192,7 +192,7 @@ def cors_after_request(response):
             response.headers["Vary"] = f"{existing_vary}, Origin" if existing_vary and "Origin" not in existing_vary else (existing_vary or "Origin")
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Methods"] = (
-            "GET, POST, PUT, DELETE, OPTIONS"
+            "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         )
         response.headers["Access-Control-Allow-Headers"] = (
             "Content-Type, Authorization, X-Requested-With"
@@ -233,7 +233,7 @@ def handle_options(path):
         if origin:
             resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Access-Control-Allow-Credentials"] = "true"
-        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         resp.headers["Access-Control-Allow-Headers"] = (
             "Content-Type, Authorization, X-Requested-With"
         )

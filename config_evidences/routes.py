@@ -255,7 +255,7 @@ def delete_evidence_config():
 @permission_required_body("evidence.create")
 def add_evidence_entry():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         baseuser = data.get("user_id")
 
         if not baseuser:
@@ -275,7 +275,7 @@ def add_evidence_entry():
 
         try:
             _validate_evidence_entry(entry_data)
-        except ValueError as e:
+        except Exception as e:
             return jsonify({"error": str(e)}), 400
 
         is_super_admin = user_id in ACCESSIBLE_IDS

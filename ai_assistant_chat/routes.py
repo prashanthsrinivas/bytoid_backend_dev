@@ -657,18 +657,17 @@ def update_config_file(client_id, parsed_timestamp, status, input_data):
 
 @ai_assistant_chat_bp.route("/process_website_msg", methods=["POST"])
 async def process_website_msg():
-
-    conn = connect_to_rds()
-    cursor = conn.cursor()
-
-    data = request.json
-    # print(f"data: {data}")
-
+    data = request.get_json(silent=True) or {}
     user_id = data.get("user_id")
     client_id = data.get("client_id")
     query = data.get("query")
     bot_response = data.get("response")
+    if not user_id or not client_id or not query:
+        return jsonify({"error": "user_id, client_id, and query are required"}), 400
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
+    conn = connect_to_rds()
+    cursor = conn.cursor()
 
     status = ""
     email = ""
@@ -803,12 +802,14 @@ def update_summary():
 
     try:
 
-        data = request.json
+        data = request.get_json(silent=True) or {}
         # print(f"📥 [DEBUG] Request data: {data}")
 
         user_id = data.get("user_id")
         client_id = data.get("client_id")
         conversation_summary = data.get("conversation_summary")
+        if not user_id or not client_id:
+            return jsonify({"error": "user_id and client_id are required"}), 400
         logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
         conversation_id = check_for_conv_file(user_id, client_id)

@@ -564,6 +564,10 @@ def get_leads_route():
 
         return jsonify({"leads": formatted_leads})
     except pymysql.Error as err:
+        # Table not provisioned on this environment → degrade to an empty list
+        # rather than a hard 500.
+        if err.args and err.args[0] == 1146:
+            return jsonify({"leads": []}), 200
         logger.error(f"Database error: {err}")
         return jsonify({"error": f"Database error: {err}"}), 500
     except Exception as e:
@@ -876,8 +880,10 @@ def send_email_link():
 # verification of email
 @users_bp.route("/verify_email", methods=["POST"])
 def verify_email():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     token = data.get("token")
+    if not token:
+        return jsonify({"valid": False, "error": "token is required"}), 400
     try:
         decrypted = fernet.decrypt(token.encode()).decode()
         invited_by, invited_to, expiry_time = decrypted.split("|")
@@ -888,8 +894,9 @@ def verify_email():
         return jsonify({"emailVerified": True, "email": invited_to}), 200
 
     except Exception as e:
-        logger.error(f"Unexpected error occured : {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        # A malformed/invalid token is a client error, not a server fault.
+        logger.error(f"Email verification failed: {str(e)}")
+        return jsonify({"valid": False, "error": "Invalid verification token"}), 400
 
 
 # user sign in method
@@ -1372,8 +1379,10 @@ def send_password_reset_email(email, reset_url):
 # validation of reset link
 @users_bp.route("/validateResetToken", methods=["POST"])
 def validate_reset_token():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     token = data.get("token")
+    if not token:
+        return jsonify({"valid": False, "error": "token is required"}), 400
     try:
         decrypted = fernet.decrypt(token.encode()).decode()
         invited_by, invited_to, expiry_time = decrypted.split("|")
@@ -1383,7 +1392,9 @@ def validate_reset_token():
         return jsonify({"valid": True, "email": invited_to}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # A malformed/invalid token is a client error, not a server fault.
+        logger.error(f"Reset token validation failed: {str(e)}")
+        return jsonify({"valid": False, "error": "Invalid reset token"}), 400
 
 
 # Updating the new password through forgot password
