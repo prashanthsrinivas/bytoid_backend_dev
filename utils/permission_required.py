@@ -339,6 +339,9 @@ def permission_required(required_permission):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
+            # CORS preflight is unauthenticated by spec — never auth-gate it.
+            if request.method == "OPTIONS":
+                return ("", 204)
             denial = _evaluate_access(required_permission)
             if denial is not None:
                 return denial
@@ -361,6 +364,9 @@ def permission_required_body(required_permission):
 
             @wraps(f)
             async def async_wrapper(*args, **kwargs):
+                # CORS preflight is unauthenticated by spec — never auth-gate it.
+                if request.method == "OPTIONS":
+                    return ("", 204)
                 denial = _evaluate_access(required_permission)
                 if denial is not None:
                     return denial
@@ -370,6 +376,9 @@ def permission_required_body(required_permission):
 
         @wraps(f)
         def sync_wrapper(*args, **kwargs):
+            # CORS preflight is unauthenticated by spec — never auth-gate it.
+            if request.method == "OPTIONS":
+                return ("", 204)
             denial = _evaluate_access(required_permission)
             if denial is not None:
                 return denial

@@ -3531,6 +3531,9 @@ def get_microsoft_client_id():
                 for c, k in zip(data, key * (len(data) // len(key) + 1))
             )
 
+        if not secretkey:
+            # Empty key → xor_encrypt would divide by zero; reject as a client error.
+            return jsonify({"error": "secretkey is required"}), 400
         if not microsoft_client_id:
             # Integration not configured on this environment — client error, not 5xx.
             return jsonify({"error": "Microsoft integration is not configured"}), 400

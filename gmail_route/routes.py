@@ -2271,7 +2271,6 @@ def start_gmail_watches():
             res = service.create_watch_req(user_id)
             results.append({"user_id": user_id, "result": res})
         except Exception as e:
-            logger.warning("start_gmail_watches: watch setup failed for %s: %s", user_id, e)
             results.append({"user_id": user_id, "error": str(e)})
     return jsonify(results)
 

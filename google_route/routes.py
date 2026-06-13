@@ -925,13 +925,16 @@ def get_token(inuser=None, value=None, in_connection=None):
     if inuser:
         user_id = inuser
     else:
-        data = request.json
+        data = request.get_json(silent=True) or {}
         user_id = (
             session.get("user_id")
             or session.get("userState_id")
             or inuser
-            or data["userid"]
+            or data.get("userid")
+            or data.get("user_id")
         )
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
     if not in_connection:
         connection = connect_to_rds()
