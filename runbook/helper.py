@@ -47,6 +47,7 @@ from utils.app_configs import IS_DEV, FRAMEWORK_OWNER
 from .utils import *
 from .utils import _safe_json_parse
 from .utils import _safe_json_parse_full
+from .evidence_overview import dedupe_evidence_overview, build_expectations_checklist
 from .risk_engine import (
     get_risk_config,
     compute_risk,
@@ -239,6 +240,8 @@ CORE INSTRUCTIONS
 3. Do NOT assume missing data — explicitly state absence.
 4. Evaluate ALL viewer criteria.
 5. Every statement must be justified with evidence or clearly marked as missing.
+6. In "expectations_checklist", evaluate EVERY semicolon-delimited expectation of
+   the selected evidence type — one entry per expectation, met true/false.
 
 --------------------------------------------------
 SUMMARY REQUIREMENTS
@@ -268,6 +271,14 @@ OUTPUT FORMAT (STRICT JSON ONLY)
   "evidence_type": "<exact match from list>",
 
   "summary": "<FULL HTML STRING WITH MULTIPLE SECTIONS>",
+
+  "expectations_checklist": [
+    {
+      "expectation": "<verbatim item from the SELECTED evidence type's semicolon-delimited expectations>",
+      "met": true,
+      "reason": "<short plain-text reason citing the evidence, or what is missing>"
+    }
+  ],
 
   "analysis": {
     "criteria_evaluation": [
@@ -315,14 +326,23 @@ async def run_evidence_analysis(data_checked, report_viewer, user_id, credits):
         files_map[source].append(str(item.get("data", "")))
 
     results = []
-    EVIDENCES_TYPES, _ = _get_user_evidence(user_id)
-    if isinstance(EVIDENCES_TYPES, list):
+    _ev_list, _ = _get_user_evidence(user_id)
+    # Keep an artifact → expectations-string map to reconcile the LLM checklist.
+    artifact_expectations = {}
+    if isinstance(_ev_list, list):
+        artifact_expectations = {
+            e.get("artifact", ""): e.get("expectations", "") or ""
+            for e in _ev_list
+            if isinstance(e, dict)
+        }
         EVIDENCES_TYPES = "\n".join(
             f"- {e.get('artifact', '')}: {e.get('expectations', '')}"
-            for e in EVIDENCES_TYPES
+            for e in _ev_list
         )
-    elif not isinstance(EVIDENCES_TYPES, str):
-        EVIDENCES_TYPES = json.dumps(EVIDENCES_TYPES)
+    elif isinstance(_ev_list, str):
+        EVIDENCES_TYPES = _ev_list
+    else:
+        EVIDENCES_TYPES = json.dumps(_ev_list)
 
     for filename, chunks in files_map.items():
         display_name = os.path.basename(filename)
@@ -343,6 +363,14 @@ async def run_evidence_analysis(data_checked, report_viewer, user_id, credits):
         parsed = _safe_json_parse(raw)
         if parsed:
             parsed["filename"] = display_name
+            # Reconcile the LLM's checklist against the selected evidence type's
+            # declared expectations so the report always shows one tick/cross per
+            # expectation (green = met, red = not present / not evaluated).
+            selected_type = parsed.get("evidence_type", "")
+            expectations_str = artifact_expectations.get(selected_type, "")
+            parsed["expectations_checklist"] = build_expectations_checklist(
+                expectations_str, parsed.get("expectations_checklist")
+            )
             results.append(parsed)
 
     return results
@@ -1006,7 +1034,9 @@ async def run_runbook_execution_engine(
 
         # Pop playbook evidence blobs (always, so they don't pollute the runbook dict)
         _evidences_urls = runbook.pop("_playbook_evidences_urls", [])
-        _ev_overview = runbook.pop("_playbook_evidence_overview", {})
+        _ev_overview = dedupe_evidence_overview(
+            runbook.pop("_playbook_evidence_overview", {})
+        )
         _ev_questions = runbook.pop("_playbook_ev_questions", [])
 
         data_checked = []

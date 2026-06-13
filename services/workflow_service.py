@@ -42,6 +42,46 @@ def base_name(filename):
     return name_without_ext[:8]
 
 
+def pick_best_artifact(candidates):
+    """Choose the single best-matching artifact for one file/image.
+
+    ``candidates`` maps artifact name → ``{"snippets": [...], "score": float}``.
+    Tie-break: highest aggregate confidence, then most snippets, then artifact
+    name (lexical) for determinism. Returns ``None`` for empty input.
+    """
+    if not candidates:
+        return None
+    ranked = sorted(
+        candidates.items(),
+        key=lambda kv: (
+            -float(kv[1].get("score", 0.0) or 0.0),
+            -len(kv[1].get("snippets", []) or []),
+            kv[0],
+        ),
+    )
+    return ranked[0][0]
+
+
+def _evidence_question_options(policy):
+    """Option set for a generated evidence-based question, gated by the
+    artifact's response policy. ``evidence_only`` (the default) drops the
+    free-text answer option so the user must upload the evidence itself."""
+    from config_evidences.evidence_helpers import RESPONSE_POLICY_EVIDENCE_ONLY
+
+    if policy == RESPONSE_POLICY_EVIDENCE_ONLY:
+        return (
+            {"B": "Upload new evidence"},
+            {"upload_options": ["B"], "text_options": []},
+        )
+    return (
+        {
+            "A": "Provide a verbal / text answer",
+            "B": "Upload new evidence",
+        },
+        {"upload_options": ["B"], "text_options": ["A"]},
+    )
+
+
 class WorkflowRunnerV2:
     def __init__(
         self,
@@ -2900,7 +2940,71 @@ class WorkflowRunnerV2:
             "all_answered": all_answered,
         }
 
+    def _enforce_response_policy(self, qid, answer):
+        """Reject a manual text answer for an assigned question that requires
+        evidence whose artifact policy is ``evidence_only`` and which is not yet
+        satisfied by the admissible evidence. Returns a structured error dict to
+        block the answer, or ``None`` to allow it.
+
+        Clearing an answer (empty string) is always allowed.
+        """
+        if answer is None or str(answer).strip() == "":
+            return None
+
+        assigned = self.workflow_json.get("assigned_questions", []) or []
+        question = next((q for q in assigned if q.get("id") == qid), None)
+        if not question:
+            return None
+        required = question.get("evidence_required") or []
+        if not required:
+            return None
+
+        from config_evidences.evidence_helpers import (
+            RESPONSE_POLICY_EVIDENCE_ONLY,
+            DEFAULT_RESPONSE_POLICY,
+        )
+
+        overview = self.workflow_json.get("evidence_overview", {}) or {}
+        satisfied = {
+            e.get("artifact")
+            for e in (overview.get("admissible") or [])
+            if isinstance(e, dict)
+        }
+
+        try:
+            from config_evidences.evidence_helpers import get_response_policy_map
+
+            policy_map = get_response_policy_map(self.userid)
+        except Exception:
+            policy_map = {}
+
+        blocking = [
+            art
+            for art in required
+            if policy_map.get(art, DEFAULT_RESPONSE_POLICY)
+            == RESPONSE_POLICY_EVIDENCE_ONLY
+            and art not in satisfied
+        ]
+        if blocking:
+            return {
+                "status": "error",
+                "policy": RESPONSE_POLICY_EVIDENCE_ONLY,
+                "qid": qid,
+                "required_artifact": blocking[0],
+                "required_artifacts": blocking,
+                "message": (
+                    "This question requires uploading evidence ("
+                    + ", ".join(blocking)
+                    + "); text answers are not accepted until that evidence is provided."
+                ),
+            }
+        return None
+
     async def answer_questions(self, answer: str, comment: str, qid: str, chid: str):
+        policy_error = self._enforce_response_policy(qid, answer)
+        if policy_error:
+            return policy_error
+
         execution_data = self.previous_data
         chats = self.chat_history
 
@@ -3267,11 +3371,18 @@ class WorkflowRunnerV2:
         execution_data = self.previous_data
         chats = self.chat_history
 
-        answer_map = {
-            item.get("question_id"): item.get("user_answer")
-            for item in answers
-            if item.get("question_id") is not None
-        }
+        answer_map = {}
+        rejected = []
+        for item in answers:
+            qid = item.get("question_id")
+            if qid is None:
+                continue
+            ans = item.get("user_answer")
+            policy_error = self._enforce_response_policy(qid, ans)
+            if policy_error:
+                rejected.append(policy_error)
+                continue
+            answer_map[qid] = ans
 
         last_step_id = None
 
@@ -3385,11 +3496,18 @@ class WorkflowRunnerV2:
                 self.logger.info("All questions answered, triggering runbook task")
                 self._trigger_runbook_owner(runbook_id)
 
-        return {
+        result = {
             "status": "success",
             "all_questions_answered": all_answered,
             "message": message,
         }
+        if rejected:
+            result["rejected"] = rejected
+            result["message"] = (
+                message
+                + f" {len(rejected)} answer(s) were rejected because they require evidence uploads."
+            )
+        return result
 
     async def make_workflow_conversation(self, user_message=""):
 
@@ -3817,14 +3935,18 @@ class WorkflowRunnerV2:
             "KNOWN EVIDENCE TYPES:\n"
             + evidence_summary_docs
             + "\n\nDOCUMENT CHUNK:\n{chunk}\n\n"
-            "Identify which evidence types from the list are present in this chunk. "
+            "A document belongs to exactly ONE best-matching evidence type. "
+            "Identify which evidence types from the list are present in this chunk "
+            "and report your confidence (0.0-1.0) for each. "
             "Extract relevant content snippets.\n\n"
             "Return ONLY valid JSON (no markdown):\n"
-            '[{"artifact": "<artifact name>", "content": "<relevant snippet>",}]'
+            '[{"artifact": "<artifact name>", "content": "<relevant snippet>", "confidence": 0.0}]'
         )
         self.logger.info("Starting evidence classification (text chunks — per file)")
 
-        # Process each file independently so findings are attributed to the correct file
+        # Process each file independently and assign it to exactly ONE artifact:
+        # accumulate per-artifact confidence across the file's chunks, then pick
+        # the single best match. This guarantees a file appears under one type.
         for f in extracted_files:
             content = f.get("content", "").strip()
             if not content:
@@ -3835,6 +3957,7 @@ class WorkflowRunnerV2:
                 "Classifying file %s (%d chars)", cf_url or "?", len(content)
             )
 
+            file_candidates = {}  # artifact -> {"snippets": [], "score": float}
             for chunk in _make_chunks(content):
                 try:
                     prompt = cat_prompt_base.replace("{chunk}", chunk)
@@ -3855,16 +3978,28 @@ class WorkflowRunnerV2:
                         artifact = item.get("artifact", "")
                         snippet = item.get("content", "")
                         if artifact and snippet:
-                            entry = evidence_map.setdefault(
-                                artifact, {"snippets": [], "files": set()}
+                            try:
+                                confidence = float(item.get("confidence", 0.5))
+                            except (TypeError, ValueError):
+                                confidence = 0.5
+                            cand = file_candidates.setdefault(
+                                artifact, {"snippets": [], "score": 0.0}
                             )
-                            entry["snippets"].append(snippet)
-                            if cf_url:
-                                entry["files"].add(cf_url)
+                            cand["snippets"].append(snippet)
+                            cand["score"] += confidence
                 except Exception as e:
                     self.logger.error(
                         "Evidence categorization chunk failed: %s", e, exc_info=IS_DEV
                     )
+
+            best = pick_best_artifact(file_candidates)
+            if best:
+                entry = evidence_map.setdefault(
+                    best, {"snippets": [], "files": set()}
+                )
+                entry["snippets"].extend(file_candidates[best]["snippets"])
+                if cf_url:
+                    entry["files"].add(cf_url)
 
         if inp_links:
             self.logger.info("INSIDE IMAGES EXTRACTION — %d image(s)", len(inp_links))
@@ -3892,16 +4027,29 @@ class WorkflowRunnerV2:
                         len(meta.get("log_entries", [])),
                     )
 
+                    img_candidates = {}  # artifact -> {"snippets": [], "score": float}
                     for item in result.get("found", []):
                         artifact = item.get("artifact", "")
                         content = item.get("content", "")
                         if artifact and content:
-                            entry = evidence_map.setdefault(
-                                artifact, {"snippets": [], "files": set()}
+                            try:
+                                confidence = float(item.get("confidence", 0.5))
+                            except (TypeError, ValueError):
+                                confidence = 0.5
+                            cand = img_candidates.setdefault(
+                                artifact, {"snippets": [], "score": 0.0}
                             )
-                            entry["snippets"].append(content)
-                            if img_cf_url:
-                                entry["files"].add(img_cf_url)
+                            cand["snippets"].append(content)
+                            cand["score"] += confidence
+
+                    best = pick_best_artifact(img_candidates)
+                    if best:
+                        entry = evidence_map.setdefault(
+                            best, {"snippets": [], "files": set()}
+                        )
+                        entry["snippets"].extend(img_candidates[best]["snippets"])
+                        if img_cf_url:
+                            entry["files"].add(img_cf_url)
                 except Exception as e:
                     self.logger.error(
                         "Vision categorization failed for image %d: %s",
@@ -4113,6 +4261,22 @@ class WorkflowRunnerV2:
         config_to_check = (
             runbook_evidence_config if runbook_evidence_config else user_evidence
         )
+        # artifact → response policy (evidence_only by default); stamped on each
+        # generated question so enforcement does not depend on a later config read.
+        try:
+            from config_evidences.evidence_helpers import (
+                get_response_policy_map,
+                DEFAULT_RESPONSE_POLICY,
+            )
+
+            _policy_map = get_response_policy_map(self.userid)
+        except Exception:
+            from config_evidences.evidence_helpers import DEFAULT_RESPONSE_POLICY
+
+            _policy_map = {}
+        # artifact → [{expectation, met, reason}] for the report verification
+        # checklist (green tick / red cross per expectation point).
+        expectations_checklists = {}
         for ev_cfg in config_to_check:
             artifact = ev_cfg.get("artifact", "")
             decision = (
@@ -4134,6 +4298,7 @@ class WorkflowRunnerV2:
                 p.strip() for p in expectations_str.split(";") if p.strip()
             ]
             snippets_text = "\n".join(admissible_evidence[artifact]["snippets"][:3])
+            artifact_checklist = []
 
             for point in expectation_points:
                 check_prompt = (
@@ -4141,7 +4306,8 @@ class WorkflowRunnerV2:
                     f"EXPECTATION POINT: {point}\n\n"
                     f"EVIDENCE:\n{snippets_text[:3000]}\n\n"
                     "Does the evidence content satisfy this specific expectation point?\n"
-                    'Return ONLY JSON: {"met": true} or {"met": false}'
+                    'Return ONLY JSON: {"met": true, "reason": "<short reason>"} '
+                    'or {"met": false, "reason": "<what is missing>"}'
                 )
                 try:
                     check_resp = await get_fireworks_response2(
@@ -4156,6 +4322,14 @@ class WorkflowRunnerV2:
                         check_data.get("met", True)
                         if isinstance(check_data, dict)
                         else True
+                    )
+                    reason = (
+                        check_data.get("reason", "")
+                        if isinstance(check_data, dict)
+                        else ""
+                    )
+                    artifact_checklist.append(
+                        {"expectation": point, "met": bool(met), "reason": reason}
                     )
                     if not met:
                         new_qid = f"evidence_{ev_q_counter}"
@@ -4209,6 +4383,10 @@ class WorkflowRunnerV2:
                             #         "missing_expectation": point,
                             #     }
                             # )
+                            _policy = _policy_map.get(
+                                artifact, DEFAULT_RESPONSE_POLICY
+                            )
+                            _options, _opt_meta = _evidence_question_options(_policy)
                             new_ev_questions.append(
                                 {
                                     "id": new_qid,
@@ -4216,18 +4394,14 @@ class WorkflowRunnerV2:
                                     "subsection": artifact,
                                     "question": ai_question,
                                     "information": ai_information,
-                                    "options": {
-                                        "A": "Provide a verbal / text answer",
-                                        "B": "Upload new evidence",
-                                        # "C": "Discard — not applicable",
-                                    },
-                                    # "discard_options": ["C"],
-                                    "upload_options": ["B"],
-                                    "text_options": ["A"],
+                                    "options": _options,
+                                    "upload_options": _opt_meta["upload_options"],
+                                    "text_options": _opt_meta["text_options"],
                                     "user_answer": None,
                                     "comment": None,
                                     "evidence_artifact": artifact,
                                     "missing_expectation": point,
+                                    "response_policy": _policy,
                                 }
                             )
                             ev_q_counter += 1
@@ -4239,6 +4413,12 @@ class WorkflowRunnerV2:
                         e,
                         exc_info=IS_DEV,
                     )
+                    artifact_checklist.append(
+                        {"expectation": point, "met": False, "reason": "Not evaluated"}
+                    )
+
+            if artifact_checklist:
+                expectations_checklists[artifact] = artifact_checklist
 
         if new_ev_questions:
             evidence_based_questions.extend(new_ev_questions)
@@ -4258,6 +4438,7 @@ class WorkflowRunnerV2:
                 "artifact": k,
                 "files": list(v["files"]),
                 "summary": v["snippets"][0] if v["snippets"] else "",
+                "expectations_checklist": expectations_checklists.get(k, []),
             }
             for k, v in admissible_evidence.items()
         ]
@@ -4500,6 +4681,37 @@ class WorkflowRunnerV2:
         discard_options = target.get("discard_options", [])
         upload_options = target.get("upload_options", [])
         text_options = target.get("text_options", [])
+
+        # Enforce response policy: an evidence_only artifact may not be answered
+        # with a free-text option (prefer the per-question stamp, fall back to
+        # the live config map for questions generated before this field existed).
+        from config_evidences.evidence_helpers import (
+            RESPONSE_POLICY_EVIDENCE_ONLY,
+            DEFAULT_RESPONSE_POLICY,
+        )
+
+        artifact = target.get("evidence_artifact", "")
+        policy = target.get("response_policy")
+        if policy is None:
+            try:
+                from config_evidences.evidence_helpers import get_response_policy_map
+
+                policy = get_response_policy_map(self.userid).get(
+                    artifact, DEFAULT_RESPONSE_POLICY
+                )
+            except Exception:
+                policy = DEFAULT_RESPONSE_POLICY
+        if policy == RESPONSE_POLICY_EVIDENCE_ONLY and user_answer in text_options:
+            return {
+                "status": "error",
+                "policy": RESPONSE_POLICY_EVIDENCE_ONLY,
+                "required_artifact": artifact,
+                "qid": qid,
+                "message": (
+                    f"This question requires uploading '{artifact}' evidence; "
+                    "text answers are not accepted."
+                ),
+            }
 
         if user_answer in discard_options:
             self.workflow_json["evidence_based_questions"] = [

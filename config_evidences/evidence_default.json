@@ -6,7 +6,8 @@
     "nature": "Documentation",
     "primaryUse": "Defines organizational rules and intent",
     "expectations": "Approved; version controlled; owner; effective date; periodic review; communicated to stakeholders; Reviewed",
-    "id": "1"
+    "id": "1",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Process Evidence",
@@ -15,7 +16,8 @@
     "nature": "Document",
     "primaryUse": "Defines control/process design",
     "expectations": "Version, owner, approver, effective date, review cycle; mapped to control; no conflicting versions; aligned to actual execution",
-    "id": "2"
+    "id": "2",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Process Evidence",
@@ -24,7 +26,8 @@
     "nature": "Document / system-linked",
     "primaryUse": "Defines operational steps",
     "expectations": "Step completeness; triggers; roles; escalation; last review; system linkage; matches execution traces",
-    "id": "3"
+    "id": "3",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Process Evidence",
@@ -33,7 +36,8 @@
     "nature": "Diagram export",
     "primaryUse": "Visual control/process flow",
     "expectations": "Roles/swimlanes; decision points; system handoffs; control points; version/date consistency",
-    "id": "4"
+    "id": "4",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Process Evidence",
@@ -42,7 +46,8 @@
     "nature": "Config / document",
     "primaryUse": "AI orchestration, prompts, RAG",
     "expectations": "Model/workflow version; prompt version; RAG sources; guardrails; approval; deployment environment; change history",
-    "id": "5"
+    "id": "5",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Control Execution Evidence",
@@ -51,7 +56,8 @@
     "nature": "Raw log/export",
     "primaryUse": "Proves control execution",
     "expectations": "Source system; generation mechanism; timestamps (TZ-consistent); event IDs; actor; outcome; completeness for period; integrity (hash/unaltered); correlates with related records",
-    "id": "6"
+    "id": "6",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Control Execution Evidence",
@@ -60,7 +66,8 @@
     "nature": "Image",
     "primaryUse": "Point-in-time proof",
     "expectations": "Visible system/URL; timestamp; environment; user/session context; no cropping of context; corroboration with stronger evidence when required",
-    "id": "7"
+    "id": "7",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Control Execution Evidence",
@@ -69,7 +76,8 @@
     "nature": "Tool report",
     "primaryUse": "Proves control/test run",
     "expectations": "Tool/version; scan date; scope/assets; policy/profile; findings + raw data; false-positive handling; remediation linkage",
-    "id": "8"
+    "id": "8",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Control Execution Evidence",
@@ -78,7 +86,8 @@
     "nature": "Structured log",
     "primaryUse": "Proves AI control enforcement",
     "expectations": "Request ID; model/version; rule triggered; action; output status; timestamp; linkage to execution/conversation",
-    "id": "9"
+    "id": "9",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Transactional Evidence",
@@ -87,7 +96,8 @@
     "nature": "System export",
     "primaryUse": "Lifecycle of activity",
     "expectations": "Ticket ID; actors; timestamps; status transitions; approvals; history; closure; no orphan states",
-    "id": "10"
+    "id": "10",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Transactional Evidence",
@@ -96,7 +106,8 @@
     "nature": "System record",
     "primaryUse": "Request initiation/processing",
     "expectations": "Request ID; requester; business justification; approvals; fulfillment; final state",
-    "id": "11"
+    "id": "11",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Transactional Evidence",
@@ -105,7 +116,8 @@
     "nature": "Structured log",
     "primaryUse": "AI task execution trace",
     "expectations": "Execution ID; input/output; model/version; actor; timestamp; human validation where applicable",
-    "id": "12"
+    "id": "12",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Transactional Evidence",
@@ -114,7 +126,8 @@
     "nature": "System/document",
     "primaryUse": "Completion of onboarding",
     "expectations": "Entity ID; steps completed; timestamps; approvals; linkage to access/risk/contract",
-    "id": "13"
+    "id": "13",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Approval & Authorization",
@@ -123,7 +136,8 @@
     "nature": "Email record",
     "primaryUse": "Informal approval",
     "expectations": "Sender identity (header); authority; timestamp; approval scope; linked action",
-    "id": "14"
+    "id": "14",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Approval & Authorization",
@@ -132,7 +146,8 @@
     "nature": "System log",
     "primaryUse": "Formal approval",
     "expectations": "Approver role; timestamp; action approved; sequence correctness; no unauthorized delegation",
-    "id": "15"
+    "id": "15",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Approval & Authorization",
@@ -141,7 +156,8 @@
     "nature": "Record/document",
     "primaryUse": "Approved deviation",
     "expectations": "Exception ID; control impacted; risk rationale; approver; expiry; compensating controls",
-    "id": "16"
+    "id": "16",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Approval & Authorization",
@@ -150,7 +166,8 @@
     "nature": "Log/record",
     "primaryUse": "Human override of AI",
     "expectations": "Override actor; original output; rationale; timestamp; audit trail intact",
-    "id": "17"
+    "id": "17",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Access & Ownership",
@@ -159,7 +176,8 @@
     "nature": "System export",
     "primaryUse": "Access state",
     "expectations": "User-role mapping; least privilege; current snapshot; no stale access; SoD conflicts checked",
-    "id": "18"
+    "id": "18",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Access & Ownership",
@@ -168,7 +186,8 @@
     "nature": "Document",
     "primaryUse": "Role design",
     "expectations": "Role definitions; approval; mapping to systems; periodic review evidence",
-    "id": "19"
+    "id": "19",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Access & Ownership",
@@ -177,7 +196,8 @@
     "nature": "System/document",
     "primaryUse": "Periodic validation",
     "expectations": "Reviewer; timestamp; decisions; coverage of population; remediation of excess access",
-    "id": "20"
+    "id": "20",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Access & Ownership",
@@ -186,7 +206,8 @@
     "nature": "Document",
     "primaryUse": "Accountability",
     "expectations": "Named owner; responsibility scope; last validation date",
-    "id": "21"
+    "id": "21",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Monitoring & Review",
@@ -195,7 +216,8 @@
     "nature": "System snapshot",
     "primaryUse": "Ongoing monitoring",
     "expectations": "Timestamp; source linkage; completeness of metrics; anomaly visibility",
-    "id": "22"
+    "id": "22",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Monitoring & Review",
@@ -204,7 +226,8 @@
     "nature": "System/document",
     "primaryUse": "Oversight activity",
     "expectations": "Reviewer identity; review frequency adherence; findings; escalation tracking",
-    "id": "23"
+    "id": "23",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Monitoring & Review",
@@ -213,7 +236,8 @@
     "nature": "Report",
     "primaryUse": "Security monitoring summary",
     "expectations": "Period coverage; incident linkage; completeness; independence of review",
-    "id": "24"
+    "id": "24",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Monitoring & Review",
@@ -222,7 +246,8 @@
     "nature": "Metrics/logs",
     "primaryUse": "Model monitoring",
     "expectations": "Drift metrics; anomalies; thresholds; timestamp; coverage across usage",
-    "id": "25"
+    "id": "25",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Exception & Incident",
@@ -231,7 +256,8 @@
     "nature": "System record",
     "primaryUse": "Incident handling",
     "expectations": "Severity; timeline; full lifecycle; no unresolved critical gaps",
-    "id": "26"
+    "id": "26",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Exception & Incident",
@@ -240,7 +266,8 @@
     "nature": "Document",
     "primaryUse": "Formal breach record",
     "expectations": "Impact; notification timeline; regulatory alignment",
-    "id": "27"
+    "id": "27",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Exception & Incident",
@@ -249,7 +276,8 @@
     "nature": "Document",
     "primaryUse": "Root cause",
     "expectations": "Root cause; corrective action; closure validation",
-    "id": "28"
+    "id": "28",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Exception & Incident",
@@ -258,7 +286,8 @@
     "nature": "Record",
     "primaryUse": "Deviations",
     "expectations": "Approval; expiry; residual risk; periodic review",
-    "id": "29"
+    "id": "29",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Reporting",
@@ -267,7 +296,8 @@
     "nature": "Document",
     "primaryUse": "Aggregated reporting",
     "expectations": "Source traceability; calculation logic; approval; consistency",
-    "id": "30"
+    "id": "30",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Reporting",
@@ -276,7 +306,8 @@
     "nature": "Export",
     "primaryUse": "Visual reporting",
     "expectations": "Timestamp; matches source data; no manipulation",
-    "id": "31"
+    "id": "31",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Reporting",
@@ -285,7 +316,8 @@
     "nature": "Document",
     "primaryUse": "AI output",
     "expectations": "Clearly labeled AI; human validation; trace to inputs",
-    "id": "32"
+    "id": "32",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Reporting",
@@ -294,7 +326,8 @@
     "nature": "Presentation",
     "primaryUse": "Executive reporting",
     "expectations": "Approved version; consistency with detailed reports",
-    "id": "33"
+    "id": "33",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Configuration / State",
@@ -303,7 +336,8 @@
     "nature": "System export",
     "primaryUse": "Current config state",
     "expectations": "Direct extract; environment tagged; no drift from baseline",
-    "id": "34"
+    "id": "34",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Configuration / State",
@@ -312,7 +346,8 @@
     "nature": "Image",
     "primaryUse": "Config view",
     "expectations": "Context visible; timestamp; corroboration needed",
-    "id": "35"
+    "id": "35",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Configuration / State",
@@ -321,7 +356,8 @@
     "nature": "Config record",
     "primaryUse": "AI deployment state",
     "expectations": "Version; parameters; deployment state; environment",
-    "id": "36"
+    "id": "36",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Configuration / State",
@@ -330,7 +366,8 @@
     "nature": "Export",
     "primaryUse": "Control settings",
     "expectations": "Policy settings; last modified; completeness",
-    "id": "37"
+    "id": "37",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Change Evidence",
@@ -339,7 +376,8 @@
     "nature": "System record",
     "primaryUse": "Change lifecycle",
     "expectations": "Approval before change; timestamps; scope; linkage to deployment",
-    "id": "38"
+    "id": "38",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Change Evidence",
@@ -348,7 +386,8 @@
     "nature": "Repo log",
     "primaryUse": "Code/config change",
     "expectations": "Author; commit history; linkage to ticket; timestamps",
-    "id": "39"
+    "id": "39",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Change Evidence",
@@ -357,7 +396,8 @@
     "nature": "Log",
     "primaryUse": "System changes",
     "expectations": "Before/after; timestamps; traceability",
-    "id": "40"
+    "id": "40",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Change Evidence",
@@ -366,7 +406,8 @@
     "nature": "Version log",
     "primaryUse": "AI changes",
     "expectations": "Version history; deployment timestamps; rollback availability",
-    "id": "41"
+    "id": "41",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Third-Party Evidence",
@@ -375,7 +416,8 @@
     "nature": "Certification/report",
     "primaryUse": "External assurance",
     "expectations": "Validity; scope; issuer credibility; relevance",
-    "id": "42"
+    "id": "42",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Third-Party Evidence",
@@ -384,7 +426,8 @@
     "nature": "Legal doc",
     "primaryUse": "Legal control",
     "expectations": "Signed; scope; obligations defined",
-    "id": "43"
+    "id": "43",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Third-Party Evidence",
@@ -393,7 +436,8 @@
     "nature": "Audit doc",
     "primaryUse": "External audit",
     "expectations": "Scope; independence; findings",
-    "id": "44"
+    "id": "44",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Third-Party Evidence",
@@ -402,7 +446,8 @@
     "nature": "Statement",
     "primaryUse": "Assurance",
     "expectations": "Authentic; scoped; corroborated",
-    "id": "45"
+    "id": "45",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Training & Awareness",
@@ -411,7 +456,8 @@
     "nature": "System export",
     "primaryUse": "Completion",
     "expectations": "User-level; timestamps; coverage",
-    "id": "46"
+    "id": "46",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Training & Awareness",
@@ -420,7 +466,8 @@
     "nature": "Report",
     "primaryUse": "Training data",
     "expectations": "Course; scores; completion",
-    "id": "47"
+    "id": "47",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Training & Awareness",
@@ -429,7 +476,8 @@
     "nature": "Email/doc",
     "primaryUse": "Awareness",
     "expectations": "Distribution proof",
-    "id": "48"
+    "id": "48",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Training & Awareness",
@@ -438,7 +486,8 @@
     "nature": "Report",
     "primaryUse": "Effectiveness",
     "expectations": "Campaign results; coverage",
-    "id": "49"
+    "id": "49",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Data & Records",
@@ -447,7 +496,8 @@
     "nature": "Data extract",
     "primaryUse": "Data evidence",
     "expectations": "Integrity; completeness; schema consistency",
-    "id": "50"
+    "id": "50",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Data & Records",
@@ -456,7 +506,8 @@
     "nature": "Raw log",
     "primaryUse": "Activity data",
     "expectations": "Source; unaltered; timestamp",
-    "id": "51"
+    "id": "51",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Data & Records",
@@ -465,7 +516,8 @@
     "nature": "Data file",
     "primaryUse": "Structured data",
     "expectations": "Ownership; schema; completeness",
-    "id": "52"
+    "id": "52",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Data & Records",
@@ -474,7 +526,8 @@
     "nature": "Versioned data",
     "primaryUse": "Model training",
     "expectations": "Version; lineage; access control",
-    "id": "53"
+    "id": "53",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Lifecycle",
@@ -483,7 +536,8 @@
     "nature": "Document",
     "primaryUse": "Lifecycle definition",
     "expectations": "Approved; timelines defined",
-    "id": "54"
+    "id": "54",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Lifecycle",
@@ -492,7 +546,8 @@
     "nature": "Log",
     "primaryUse": "Archival proof",
     "expectations": "Timestamp; completeness",
-    "id": "55"
+    "id": "55",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Lifecycle",
@@ -501,7 +556,8 @@
     "nature": "Log",
     "primaryUse": "Deletion proof",
     "expectations": "Verifiable deletion; identifiers",
-    "id": "56"
+    "id": "56",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Lifecycle",
@@ -510,7 +566,8 @@
     "nature": "Document",
     "primaryUse": "Process",
     "expectations": "Traceable across stages",
-    "id": "57"
+    "id": "57",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Physical",
@@ -519,7 +576,8 @@
     "nature": "System log",
     "primaryUse": "Physical access",
     "expectations": "Timestamp; identity; completeness",
-    "id": "58"
+    "id": "58",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Physical",
@@ -528,7 +586,8 @@
     "nature": "Image/video",
     "primaryUse": "Surveillance",
     "expectations": "Time/location; integrity",
-    "id": "59"
+    "id": "59",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Physical",
@@ -537,7 +596,8 @@
     "nature": "Register",
     "primaryUse": "Visitor tracking",
     "expectations": "Signed; purpose",
-    "id": "60"
+    "id": "60",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Physical",
@@ -546,7 +606,8 @@
     "nature": "Report",
     "primaryUse": "Physical controls",
     "expectations": "Inspection results; date",
-    "id": "61"
+    "id": "61",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Analytical / Assessment",
@@ -555,7 +616,8 @@
     "nature": "Report",
     "primaryUse": "Risk analysis",
     "expectations": "Methodology; completeness; timestamp",
-    "id": "62"
+    "id": "62",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Analytical / Assessment",
@@ -564,7 +626,8 @@
     "nature": "Test record",
     "primaryUse": "Effectiveness",
     "expectations": "Tester; reproducibility",
-    "id": "63"
+    "id": "63",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Analytical / Assessment",
@@ -573,7 +636,8 @@
     "nature": "Tool output",
     "primaryUse": "Security testing",
     "expectations": "Coverage; severity; timestamp",
-    "id": "64"
+    "id": "64",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Analytical / Assessment",
@@ -582,7 +646,8 @@
     "nature": "Report",
     "primaryUse": "Model assessment",
     "expectations": "Bias; accuracy; dataset reference",
-    "id": "65"
+    "id": "65",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Attestation",
@@ -591,7 +656,8 @@
     "nature": "Signed doc",
     "primaryUse": "Declaration",
     "expectations": "Signed; scoped; corroborated",
-    "id": "66"
+    "id": "66",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Attestation",
@@ -600,7 +666,8 @@
     "nature": "Official doc",
     "primaryUse": "Compliance",
     "expectations": "Valid; issuer credible",
-    "id": "67"
+    "id": "67",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Attestation",
@@ -609,7 +676,8 @@
     "nature": "Approval",
     "primaryUse": "Accountability",
     "expectations": "Authority; timestamp",
-    "id": "68"
+    "id": "68",
+    "responsePolicy": "evidence_only"
   },
   {
     "type": "Attestation",
@@ -618,7 +686,8 @@
     "nature": "Statement",
     "primaryUse": "AI assurance",
     "expectations": "Scoped; accountable owner",
-    "id": "69"
+    "id": "69",
+    "responsePolicy": "evidence_only"
   },
   {
     "id": "70",
@@ -627,6 +696,7 @@
     "artifact": "SOC 2 Type 2",
     "nature": "Documentation",
     "primaryUse": "Assessment",
-    "expectations": "Date of report is within the last 6 months"
+    "expectations": "Date of report is within the last 6 months",
+    "responsePolicy": "evidence_only"
   }
 ]

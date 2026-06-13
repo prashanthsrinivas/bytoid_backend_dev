@@ -2174,10 +2174,12 @@ async def get_think_bedrock_vision_image(
     extraction_prompt = (
         "You are an expert evidence analyst. Analyze the image provided and extract EVERY piece of information.\n\n"
         f"KNOWN EVIDENCE TYPES:\n{evidence_summary}\n\n"
+        "An image belongs to exactly ONE best-matching evidence type; report your "
+        "confidence (0.0-1.0) for each match.\n"
         "Return ONLY valid JSON with this structure (no markdown, no explanation):\n"
         "{\n"
         '  "found": [\n'
-        '    {"artifact": "<evidence type name>", "content": "<what you see that matches this evidence>", "file_reference": "image"}\n'
+        '    {"artifact": "<evidence type name>", "content": "<what you see that matches this evidence>", "confidence": 0.0, "file_reference": "image"}\n'
         "  ],\n"
         '  "image_meta": {\n'
         '    "image_type": "<screenshot|log|chart|document|photo|diagram|unknown>",\n'

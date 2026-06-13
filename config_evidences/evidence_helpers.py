@@ -18,6 +18,16 @@ logger = logging.getLogger(__name__)
 _ev_kms = _EvKMSService()
 _EV_TEXT_FIELDS = ("artifact", "nature", "primaryUse", "expectations")
 
+# Response policy: whether a question tied to this artifact accepts a text
+# answer or strictly requires an upload of the artifact itself.
+RESPONSE_POLICY_EVIDENCE_ONLY = "evidence_only"
+RESPONSE_POLICY_TEXT_FALLBACK = "text_fallback_allowed"
+VALID_RESPONSE_POLICIES = (
+    RESPONSE_POLICY_EVIDENCE_ONLY,
+    RESPONSE_POLICY_TEXT_FALLBACK,
+)
+DEFAULT_RESPONSE_POLICY = RESPONSE_POLICY_EVIDENCE_ONLY
+
 
 def _enc_ev(user_id: str, v):
     if not v or not isinstance(v, str):
@@ -70,11 +80,26 @@ def _decrypt_evidence_list(user_id: str, evidence_list: list) -> tuple:
 # ============================================================
 # Evidence CRUD Helpers
 # ============================================================
+def _apply_response_policy_defaults(evidence_list):
+    """Stamp the default responsePolicy on entries missing/holding an invalid
+    one. In-memory only — callers must NOT treat this as a migration that
+    warrants re-saving (a save re-encrypts every text field via KMS)."""
+    if not isinstance(evidence_list, list):
+        return evidence_list
+    for entry in evidence_list:
+        if (
+            isinstance(entry, dict)
+            and entry.get("responsePolicy") not in VALID_RESPONSE_POLICIES
+        ):
+            entry["responsePolicy"] = DEFAULT_RESPONSE_POLICY
+    return evidence_list
+
+
 def _load_default_evidence():
     try:
         file_path = os.path.join(os.path.dirname(__file__), "evidence_default.json")
         with open(file_path, "r") as f:
-            return json.load(f)
+            return _apply_response_policy_defaults(json.load(f))
     except Exception as e:
         logger.error(f"Error loading default evidence: {e}", exc_info=True)
         return []
@@ -96,6 +121,10 @@ def _get_user_evidence(user_id):
                         _save_user_evidence(user_id, user_evidence)
                     except Exception:
                         pass
+                # Defaults applied after the encryption-migration save on
+                # purpose: a missing responsePolicy alone must never trigger
+                # a re-save (KMS re-encryption churn).
+                user_evidence = _apply_response_policy_defaults(user_evidence)
             return user_evidence, True
     except Exception as e:
         logger.info(f"User evidence not found or error reading: {e}")
@@ -132,10 +161,18 @@ def _save_user_evidence(user_id, data):
         return {"status": "error", "message": str(e)}
 
 
-def _update_entry_by_id(evidence_list, entry_id, expectations):
+def _update_entry_by_id(evidence_list, entry_id, expectations=None, response_policy=None):
+    if response_policy is not None and response_policy not in VALID_RESPONSE_POLICIES:
+        raise ValueError(
+            f"Invalid responsePolicy: {response_policy!r}. "
+            f"Must be one of {', '.join(VALID_RESPONSE_POLICIES)}"
+        )
     for entry in evidence_list:
         if entry.get("id") == entry_id:
-            entry["expectations"] = expectations
+            if expectations is not None:
+                entry["expectations"] = expectations
+            if response_policy is not None:
+                entry["responsePolicy"] = response_policy
             return evidence_list
 
     raise ValueError(f"Evidence entry not found: id={entry_id}")
@@ -162,6 +199,15 @@ def _validate_evidence_entry(entry_data):
     missing_keys = required_keys - set(entry_data.keys())
     if missing_keys:
         raise ValueError(f"Missing required keys: {', '.join(sorted(missing_keys))}")
+    if (
+        "responsePolicy" in entry_data
+        and entry_data["responsePolicy"] is not None
+        and entry_data["responsePolicy"] not in VALID_RESPONSE_POLICIES
+    ):
+        raise ValueError(
+            f"Invalid responsePolicy: {entry_data['responsePolicy']!r}. "
+            f"Must be one of {', '.join(VALID_RESPONSE_POLICIES)}"
+        )
     return True
 
 
@@ -175,9 +221,30 @@ def _add_entry(evidence_list, entry_data):
         "id": str(max([int(e.get("id", 0)) for e in evidence_list]) + 1),
         **entry_data,
     }
+    if new_entry.get("responsePolicy") not in VALID_RESPONSE_POLICIES:
+        new_entry["responsePolicy"] = DEFAULT_RESPONSE_POLICY
 
     evidence_list.append(new_entry)
     return evidence_list, new_entry
+
+
+def get_response_policy_map(user_id):
+    """artifact name → response policy for the user's evidence config.
+    Unknown/missing policies resolve to the mandated default."""
+    try:
+        evidence = get_only_evidence(user_id)
+    except Exception as e:
+        logger.error(f"Error building response policy map: {e}", exc_info=True)
+        return {}
+    policy_map = {}
+    if isinstance(evidence, list):
+        for entry in evidence:
+            if isinstance(entry, dict) and entry.get("artifact"):
+                policy = entry.get("responsePolicy")
+                policy_map[entry["artifact"]] = (
+                    policy if policy in VALID_RESPONSE_POLICIES else DEFAULT_RESPONSE_POLICY
+                )
+    return policy_map
 
 
 # ============================================================
@@ -247,6 +314,9 @@ For EXPECTATION MISMATCH, use:
   B: "Accept as-is"
   C: "Custom explanation"
   discard_process: ["A"]
+
+If an artifact's "responsePolicy" is "evidence_only", OMIT the "Custom explanation"
+option for its questions — the user must provide the evidence itself.
 """.format(
         evidence_list=json.dumps(evidence_list, indent=2),
         allowed_list=json.dumps([c.get("artifact") for c in allowed]),
@@ -266,6 +336,41 @@ def _extract_json_array(text):
     """Extract JSON array from text (handles markdown fences)."""
     match = re.search(r"\[.*\]", text, re.DOTALL)
     return match.group(0) if match else "[]"
+
+
+_TEXT_OPTION_RE = re.compile(r"custom explanation|verbal|text answer", re.IGNORECASE)
+
+
+def _is_text_option(value):
+    return isinstance(value, str) and bool(_TEXT_OPTION_RE.search(value))
+
+
+def _strip_text_options_for_evidence_only(qa_list, policy_map):
+    """Deterministic post-filter on LLM-generated evidence Q&A: for artifacts
+    whose policy is evidence_only, remove free-text answer options so the user
+    must upload/fix the evidence itself. Never strips every option."""
+    if not isinstance(qa_list, list):
+        return qa_list
+    for item in qa_list:
+        if not isinstance(item, dict):
+            continue
+        artifact = item.get("subsection") or ""
+        policy = policy_map.get(artifact, DEFAULT_RESPONSE_POLICY)
+        if policy not in VALID_RESPONSE_POLICIES:
+            policy = DEFAULT_RESPONSE_POLICY
+        item["response_policy"] = policy
+        if policy != RESPONSE_POLICY_EVIDENCE_ONLY:
+            continue
+        options = item.get("options")
+        if not isinstance(options, dict):
+            continue
+        kept = {k: v for k, v in options.items() if not _is_text_option(v)}
+        if kept and len(kept) < len(options):
+            item["options"] = kept
+            item["discard_process"] = [
+                k for k in (item.get("discard_process") or []) if k in kept
+            ]
+    return qa_list
 
 
 async def run_evidence_check_job(data, job_id=None):
@@ -316,8 +421,14 @@ async def run_evidence_check_job(data, job_id=None):
             extracted_payload, user_evidence, allowed, disallowed, user_id, credits
         )
 
-        # Step 5: Parse Q&A JSON
+        # Step 5: Parse Q&A JSON, then enforce response policies deterministically
         qa_list = json.loads(_extract_json_array(raw_response))
+        policy_map = {
+            e.get("artifact"): e.get("responsePolicy", DEFAULT_RESPONSE_POLICY)
+            for e in user_evidence
+            if isinstance(e, dict) and e.get("artifact")
+        }
+        qa_list = _strip_text_options_for_evidence_only(qa_list, policy_map)
 
         # Step 6: Save Q&A back to runbook
         existing_meta["user_allowed_details"] = qa_list

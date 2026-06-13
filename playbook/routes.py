@@ -2860,58 +2860,86 @@ async def answer_ques_cloud_bk(
     the selected connectors, persist the raw JSON for the UI reveal button, and
     AI-fill the workflow's assigned questions from it."""
     from runbook.utils import resolve_connector_endpoint_data
+    from playbook.cloud_autofill import resolve_posture_payload, POSTURE_PROVIDERS
 
     credits = Credits()
     if not filename.lower().endswith(".json"):
         filename = f"{filename}.json"
 
-    # 1. Resolve the latest cached/scheduled run for each selected connector.
-    conn = connect_to_rds()
+    # Partition selections: CSPM posture snapshots vs legacy RADAR connectors.
+    # A posture selection is marked source="posture", or is a bare provider
+    # (aws/azure/gcp) with no endpoint_id.
+    posture_selections = []
+    legacy_connectors = []
+    for c in connectors or []:
+        provider = (c.get("provider") or "custom").lower()
+        if c.get("source") == "posture" or (
+            c.get("endpoint_id") is None and provider in POSTURE_PROVIDERS
+        ):
+            posture_selections.append(
+                {"provider": provider, "audit_id": c.get("audit_id")}
+            )
+        else:
+            legacy_connectors.append(c)
+
     raw_blob = []
     payload_parts = []
-    try:
-        for c in connectors or []:
-            provider = (c.get("provider") or "custom").lower()
-            endpoint_id = c.get("endpoint_id")
-            app_id = c.get("app_id")
-            if endpoint_id is None:
-                continue
-            try:
-                data_str, source = await resolve_connector_endpoint_data(
-                    conn, provider, endpoint_id, app_id, max_chars=16000
+
+    # 1a. Latest security-posture snapshots (preferred source).
+    if posture_selections:
+        posture_text, posture_blob = resolve_posture_payload(
+            user_id, posture_selections, max_chars=16000
+        )
+        if posture_text:
+            payload_parts.append(posture_text)
+        raw_blob.extend(posture_blob)
+
+    # 1b. Legacy RADAR connector endpoints (back-compat).
+    if legacy_connectors:
+        conn = connect_to_rds()
+        try:
+            for c in legacy_connectors:
+                provider = (c.get("provider") or "custom").lower()
+                endpoint_id = c.get("endpoint_id")
+                app_id = c.get("app_id")
+                if endpoint_id is None:
+                    continue
+                try:
+                    data_str, source = await resolve_connector_endpoint_data(
+                        conn, provider, endpoint_id, app_id, max_chars=16000
+                    )
+                except Exception as e:
+                    raw_blob.append(
+                        {
+                            "provider": provider,
+                            "app_id": app_id,
+                            "endpoint_id": endpoint_id,
+                            "error": str(e),
+                        }
+                    )
+                    continue
+                payload_parts.append(
+                    f"[SOURCE provider={provider} app_id={app_id} "
+                    f"endpoint_id={endpoint_id} ({source})]\n{data_str}"
                 )
-            except Exception as e:
+                try:
+                    parsed = json.loads(data_str)
+                except Exception:
+                    parsed = data_str
                 raw_blob.append(
                     {
                         "provider": provider,
                         "app_id": app_id,
                         "endpoint_id": endpoint_id,
-                        "error": str(e),
+                        "source": source,
+                        "data": parsed,
                     }
                 )
-                continue
-            payload_parts.append(
-                f"[SOURCE provider={provider} app_id={app_id} "
-                f"endpoint_id={endpoint_id} ({source})]\n{data_str}"
-            )
+        finally:
             try:
-                parsed = json.loads(data_str)
+                conn.close()
             except Exception:
-                parsed = data_str
-            raw_blob.append(
-                {
-                    "provider": provider,
-                    "app_id": app_id,
-                    "endpoint_id": endpoint_id,
-                    "source": source,
-                    "data": parsed,
-                }
-            )
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+                pass
 
     cloud_payload = "\n\n".join(payload_parts)
 
@@ -2958,16 +2986,79 @@ async def answer_ques_cloud_bk(
     return result
 
 
+def _extract_autofill_payload(file_keys):
+    """Download each S3 key and extract its content for the auto-fill pipeline.
+
+    Returns ``(extracted_payload, inp_links, inp_link_keys, local_files)`` — the
+    exact tuple ``answer_ques_file_bk`` consumes. ``local_files`` are temp paths
+    the caller must clean up. Shared by /make_ans_by_files and drive import so
+    both flows feed identical data (and therefore the same policy/classification
+    enforcement) into the runner.
+    """
+    import mimetypes
+    import base64
+    from utils.s3_utils import s3bucket
+    from radar.radar_helpers import extract_files_content, IMAGE_EXTENSIONS
+
+    s3 = s3bucket()
+    if isinstance(file_keys, str):
+        file_keys = [file_keys]
+
+    extracted_payload = []
+    inp_links = []
+    inp_link_keys = []  # parallel to inp_links — tracks source S3 key per image
+    local_files = []
+
+    for key in file_keys:
+        if not key:
+            continue
+        try:
+            fname = os.path.basename(key)
+            temp_path = os.path.join(tempfile.gettempdir(), fname)
+            s3.download_file(Bucket=S3_BUCKET, Key=key, Filename=temp_path)
+            local_files.append(temp_path)
+
+            with open(temp_path, "rb") as fh:
+                file_bytes = fh.read()
+
+            ext = os.path.splitext(fname)[1].lower()
+            content_type = (
+                mimetypes.guess_type(fname)[0] or "application/octet-stream"
+            )
+
+            if ext in IMAGE_EXTENSIONS:
+                b64 = base64.b64encode(file_bytes).decode()
+                inp_links.append(f"data:{content_type};base64,{b64}")
+                inp_link_keys.append(key)
+            else:
+                extracted = extract_files_content(
+                    [
+                        {
+                            "filename": fname,
+                            "data": file_bytes,
+                            "content_type": content_type,
+                        }
+                    ]
+                )
+                for item in extracted:
+                    if item.get("type") in IMAGE_EXTENSIONS:
+                        inp_links.append(item["content"])
+                        inp_link_keys.append(key)
+                    else:
+                        item["s3_key"] = key
+                        extracted_payload.append(item)
+
+        except Exception as e:
+            logger.warning("Failed to process %s: %s", key, e)
+
+    return extracted_payload, inp_links, inp_link_keys, local_files
+
+
 @playbook_bp.route("/make_ans_by_files", methods=["POST"])
 @permission_required_body("workflow.process.edit")
 def generate_ans_files():
     local_files = []
     try:
-        import mimetypes
-        import base64
-        from utils.s3_utils import s3bucket
-        from radar.radar_helpers import extract_files_content, IMAGE_EXTENSIONS
-
         user_id = request.form.get("user_id")
         file_keys = request.form.getlist("file_keys")
         step_id = request.form.get("step_id")
@@ -2981,55 +3072,15 @@ def generate_ans_files():
                 400,
             )
 
-        s3 = s3bucket()
-        if type(file_keys) == str:
+        if isinstance(file_keys, str):
             file_keys = [file_keys]
 
-        extracted_payload = []
-        inp_links = []
-        inp_link_keys = []  # parallel to inp_links — tracks source S3 key per image
-
-        for key in file_keys:
-            if not key:
-                continue
-            try:
-                fname = os.path.basename(key)
-                temp_path = os.path.join(tempfile.gettempdir(), fname)
-                s3.download_file(Bucket=S3_BUCKET, Key=key, Filename=temp_path)
-                local_files.append(temp_path)
-
-                with open(temp_path, "rb") as fh:
-                    file_bytes = fh.read()
-
-                ext = os.path.splitext(fname)[1].lower()
-                content_type = (
-                    mimetypes.guess_type(fname)[0] or "application/octet-stream"
-                )
-
-                if ext in IMAGE_EXTENSIONS:
-                    b64 = base64.b64encode(file_bytes).decode()
-                    inp_links.append(f"data:{content_type};base64,{b64}")
-                    inp_link_keys.append(key)
-                else:
-                    extracted = extract_files_content(
-                        [
-                            {
-                                "filename": fname,
-                                "data": file_bytes,
-                                "content_type": content_type,
-                            }
-                        ]
-                    )
-                    for item in extracted:
-                        if item.get("type") in IMAGE_EXTENSIONS:
-                            inp_links.append(item["content"])
-                            inp_link_keys.append(key)
-                        else:
-                            item["s3_key"] = key
-                            extracted_payload.append(item)
-
-            except Exception as e:
-                logger.warning("Failed to process %s: %s", key, e)
+        (
+            extracted_payload,
+            inp_links,
+            inp_link_keys,
+            local_files,
+        ) = _extract_autofill_payload(file_keys)
 
         if not extracted_payload and not inp_links:
             return (
@@ -3121,6 +3172,25 @@ def generate_ans_cloud():
         )
 
     except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/workflow/cloud_autofill/availability", methods=["GET"])
+@permission_required_body("workflow.process.view")
+def cloud_autofill_availability():
+    """Which cloud providers have at least one CSPM posture snapshot for this
+    user. The UI uses this to only offer providers with ingestible data."""
+    try:
+        user_id = request.args.get("user_id")
+        if not user_id:
+            return jsonify({"status": "error", "message": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+        from playbook.cloud_autofill import get_provider_availability
+
+        providers = get_provider_availability(user_id)
+        return jsonify({"status": "success", "providers": providers})
+    except Exception as e:
+        logger.error("cloud_autofill_availability failed: %s", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 

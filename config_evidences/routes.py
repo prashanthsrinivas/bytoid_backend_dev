@@ -29,6 +29,7 @@ from config_evidences.evidence_helpers import (
     _validate_evidence_entry,
     _add_entry,
     run_evidence_check_job,
+    VALID_RESPONSE_POLICIES,
 )
 
 config_evidences_bp = Blueprint("config_evidences", __name__)
@@ -107,10 +108,28 @@ def update_evidence_config():
         user_id = data.get("user_id")
         entry_id = data.get("id")
         expectations = data.get("expectations")
+        response_policy = data.get("responsePolicy")
 
-        if not all([user_id, entry_id, expectations]):
+        if not user_id or not entry_id:
             return (
-                jsonify({"error": "user_id, id, and expectations are required"}),
+                jsonify({"error": "user_id and id are required"}),
+                400,
+            )
+        if expectations is None and response_policy is None:
+            return (
+                jsonify(
+                    {"error": "at least one of expectations or responsePolicy is required"}
+                ),
+                400,
+            )
+        if response_policy is not None and response_policy not in VALID_RESPONSE_POLICIES:
+            return (
+                jsonify(
+                    {
+                        "error": "invalid responsePolicy; must be one of "
+                        + ", ".join(VALID_RESPONSE_POLICIES)
+                    }
+                ),
                 400,
             )
 
@@ -118,7 +137,9 @@ def update_evidence_config():
 
         if is_super_admin:
             evidence = _load_default_evidence()
-            updated = _update_entry_by_id(evidence, entry_id, expectations)
+            updated = _update_entry_by_id(
+                evidence, entry_id, expectations, response_policy
+            )
 
             file_path = os.path.join(os.path.dirname(__file__), "evidence_default.json")
             with open(file_path, "w") as f:
@@ -126,7 +147,9 @@ def update_evidence_config():
 
         else:
             evidence, _ = _get_user_evidence(user_id)
-            updated = _update_entry_by_id(evidence, entry_id, expectations)
+            updated = _update_entry_by_id(
+                evidence, entry_id, expectations, response_policy
+            )
             result = _save_user_evidence(user_id, updated)
 
             if result.get("status") != "success":
@@ -140,7 +163,7 @@ def update_evidence_config():
             status="success",
             actor_user_id=user_id,
             actor_email=actor_email,
-            metadata={"entry_id": entry_id},
+            metadata={"entry_id": entry_id, "responsePolicy": response_policy},
         )
         g.audit_logged = True
 
@@ -152,6 +175,7 @@ def update_evidence_config():
                     "updated": {
                         "id": entry_id,
                         "expectations": expectations,
+                        "responsePolicy": response_policy,
                     },
                 }
             ),
@@ -233,6 +257,11 @@ def add_evidence_entry():
     try:
         data = request.get_json()
         baseuser = data.get("user_id")
+
+        if not baseuser:
+            return jsonify({"error": "user_id is required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+
         entry_data = {
             "type": data.get("type"),
             "number": data.get("number"),
@@ -241,10 +270,8 @@ def add_evidence_entry():
             "primaryUse": data.get("primaryUse"),
             "expectations": data.get("expectations"),
         }
-
-        if not user_id:
-            return jsonify({"error": "user_id is required"}), 400
-        logged_in_user_id, user_id = parse_composite_user_id(baseuser)
+        if data.get("responsePolicy") is not None:
+            entry_data["responsePolicy"] = data.get("responsePolicy")
 
         try:
             _validate_evidence_entry(entry_data)

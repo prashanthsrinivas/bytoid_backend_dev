@@ -16,6 +16,7 @@ from users_routes.routes import users_bp
 from webhooks.routes import twilio_bp
 from contacts_route.route import contacts_bp
 from playbook.routes import playbook_bp
+from playbook.drive_import import drive_import_bp
 from zoho_routes.routes import zoho_bp
 from credits_route.route import credits_bp
 from umail.routes import umail_bp
@@ -245,6 +246,7 @@ blueprints = [
     agent_bps,
     gmail_bp,
     playbook_bp,
+    drive_import_bp,
     session_bp,
     microsoft_bp,
     twilio_bp,
