@@ -2640,14 +2640,20 @@ def change_name_test():
 
 @ai_reporting_bp.route("/creation_of_umail_index", methods=["POST"])
 def creation_of_umail_index():
+    # Building the Lance index is a heavy, multi-minute operation — run it in a
+    # background thread and return immediately so the request doesn't time out.
+    import threading
+
     user_id = "112359636982080060072"
-    try:
-        client = UmailLanceClient(user_id)
-        lance_mails = client.creating_index()
-        return jsonify({"message": "index creation successful"})
-    except Exception as e:
-        # print(f"Error in creation_of_umail_index: {e}")
-        return []
+
+    def _build():
+        try:
+            UmailLanceClient(user_id).creating_index()
+        except Exception as e:
+            logger.error("creation_of_umail_index background build failed: %s", e)
+
+    threading.Thread(target=_build, daemon=True).start()
+    return jsonify({"status": "started", "message": "Index creation started in the background"}), 202
 
 
 @ai_reporting_bp.route("/extract_names_from_emails_test", methods=["POST"])
