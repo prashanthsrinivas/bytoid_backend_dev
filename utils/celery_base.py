@@ -731,6 +731,88 @@ def run_scheduled_step_job(self, userid, filename, stepid, uniquekey=None):
         raise
 
 
+@celery.task(bind=True, max_retries=0, name="tasks.playground_step")
+def run_playground_step_job(
+    self, owner_user_id, filename, userinput, testing, ws_user_id, session_id, job_id
+):
+    """Run the interactive playground option/step pipeline off the request path.
+
+    The browser reaches the API through REST API Gateway, which caps a
+    synchronous request at ~29s and cannot stream. The option-selection pipeline
+    (check_input_tone → intent → trigger → route → execute) makes several
+    sequential LLM calls, so a full-execution step like "Generate Meeting
+    Invitation Body" routinely blows past that and the request 503s. So the work
+    runs here and the result is pushed to the browser over the WebSocket
+    (ws_service), keyed by job_id, instead of streamed back over HTTP.
+    """
+    from services.workflow_service import WorkflowRunnerV2
+    from credits_route.route import Credits
+    from websockets_custom.ws_instance import ws_service
+
+    def _emit(result):
+        msg_type = "error" if (result or {}).get("log_status") == "error" else "success"
+        try:
+            asyncio.run(
+                ws_service.emit(
+                    user_id=ws_user_id,
+                    message=(result or {}).get("response_message", ""),
+                    # scope="job" is delivered only to this session's connection
+                    # and is NOT toasted/added to the notification bell by the
+                    # frontend — it is purely indexed by job_id for the awaiter.
+                    scope="job",
+                    session_id=session_id,
+                    job_id=job_id,
+                    msg_type=msg_type,
+                    stage="done",
+                    feature="playground_step",
+                    extra={"result": result},
+                )
+            )
+        except Exception as emit_exc:
+            logger.error("playground_step emit failed job=%s: %s", job_id, emit_exc)
+
+    db = connect_to_rds()
+    try:
+        credits = Credits(db)
+        with WorkflowRunnerV2(
+            userid=owner_user_id,
+            filename=filename,
+            testing=testing,
+            db=db,
+            credits=credits,
+        ) as runner:
+            result = asyncio.run(runner.check_input_tone(user_input=userinput))
+
+        if result is None:
+            result = {
+                "response_message": "Error processing option.",
+                "wf_single_runner": False,
+                "log_status": "error",
+            }
+        _emit(result)
+
+    except Exception as e:
+        logger.error(
+            "playground_step failed job=%s user=%s: %s",
+            job_id,
+            owner_user_id,
+            e,
+            exc_info=True,
+        )
+        _emit(
+            {
+                "response_message": f"Error processing option: {type(e).__name__}: {e}",
+                "wf_single_runner": False,
+                "log_status": "error",
+            }
+        )
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
 @celery.task(bind=True, max_retries=3, name="tasks.lance_embedding")
 async def run_lance_embedding(self, user_id, batch_count, lance_folder):
     try:

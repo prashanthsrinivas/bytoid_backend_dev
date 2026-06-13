@@ -80,6 +80,7 @@ PERMISSION_ROUTES = {
         "/run_workflow",
         "/run_workflow_step",
         "/test-playground-step",
+        "/test-playground-step-async",
         "/generate-workflow-input",
         "/test-mid",
         "/autocheck-workflow",

@@ -1537,6 +1537,19 @@ def testworkflowbyinput_stream():
         db = connect_to_rds()
         credits = Credits(db=db)
 
+        # Open the stream immediately, then emit an SSE keepalive comment every
+        # 15s while the work runs. The option-selection pipeline (intent → trigger
+        # → route → execute) makes several sequential LLM calls, so a
+        # full-execution step like "Generate Meeting Invitation Body" can run past
+        # a proxy's idle timeout. With nothing on the wire until `done`, an
+        # idle-timeout proxy (nginx proxy_read_timeout / ALB idle) drops the
+        # connection with a 5xx — which surfaced as a 503 + "Error processing
+        # option." on slower steps. The keepalive runs on THIS thread (not a
+        # worker) so the Flask request context the pipeline relies on is preserved.
+        yield ": connected\n\n"
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
             with WorkflowRunnerV2(
                 userid=user_id,
@@ -1546,7 +1559,16 @@ def testworkflowbyinput_stream():
                 db=db,
                 credits=credits,
             ) as runner:
-                result = asyncio.run(runner.check_input_tone(user_input=userinput))
+                task = loop.create_task(
+                    runner.check_input_tone(user_input=userinput)
+                )
+                while not task.done():
+                    # Drive the loop for up to 15s; if the step is still running,
+                    # send a heartbeat and keep waiting.
+                    loop.run_until_complete(asyncio.wait({task}, timeout=15))
+                    if not task.done():
+                        yield ": keepalive\n\n"
+                result = task.result()
 
             if result is None:
                 result = {
@@ -1557,6 +1579,8 @@ def testworkflowbyinput_stream():
 
         except Exception as e:
             yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+        finally:
+            loop.close()
 
     response = Response(
         stream_with_context(event_stream()), mimetype="text/event-stream"
@@ -1568,6 +1592,69 @@ def testworkflowbyinput_stream():
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
+
+
+@playbook_bp.route("/test-playground-step-async", methods=["POST"])
+@permission_required_body("workflow.process.execute")
+def testworkflowbyinput_async():
+    """Async sibling of /test-playground-step for the API-Gateway-fronted clients.
+
+    REST API Gateway hard-caps a synchronous request at ~29s and cannot stream
+    SSE, so a full-execution step (multiple sequential LLM calls) times out with
+    a 503. Instead of streaming, enqueue the work and return immediately; the
+    Celery task pushes the result to the browser over the WebSocket, keyed by
+    job_id. The client supplies its WebSocket session_id (and a job_id) so the
+    result is delivered to exactly that browser session.
+    """
+    data = request.json or {}
+
+    user_id = data.get("user_id")
+    filename = data.get("filename")
+    userinput = data.get("userinput")
+    session_id = data.get("session_id")
+    job_id = data.get("job_id") or uuid.uuid4().hex
+    is_testing_val = data.get("is_testing")
+    testing = is_testing_val if is_testing_val is not None else True
+
+    if not user_id or not filename or not userinput:
+        return jsonify({"status": "error", "message": "Invalid input"}), 400
+    if not session_id:
+        return (
+            jsonify(
+                {"status": "error", "message": "Missing session_id for realtime delivery"}
+            ),
+            400,
+        )
+    if not filename.lower().endswith(".json"):
+        filename = f"{filename}.json"
+
+    # logged_in == owner for self-access; for shared access the LEFT side is the
+    # actor that owns the WebSocket connection, the RIGHT side owns the workflow.
+    logged_in_user_id, owner_user_id = parse_composite_user_id(user_id)
+
+    wf_loc = f"{owner_user_id}/workflow/{base_name(filename=filename)}/{filename}"
+    if not read_json_from_s3(wf_loc):
+        return jsonify({"status": "error", "message": "Workflow not found"}), 404
+
+    # Lazy import keeps utils.celery_base (which imports playbook.*) out of this
+    # module's import graph, avoiding a circular import at startup.
+    from utils.celery_base import celery
+
+    celery.send_task(
+        "tasks.playground_step",
+        args=[
+            owner_user_id,
+            filename,
+            userinput,
+            testing,
+            logged_in_user_id,
+            session_id,
+            job_id,
+        ],
+        retry=False,
+    )
+
+    return jsonify({"status": "queued", "job_id": job_id}), 202
 
 
 @playbook_bp.route("/clear-playground-data", methods=["POST"])
