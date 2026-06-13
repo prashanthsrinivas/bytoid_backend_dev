@@ -61,6 +61,7 @@ from vra.routes import vra_bp
 from sg_audit.routes import sg_audit_bp
 from azure_audit.routes import azure_audit_bp
 from gcp_audit.routes import gcp_audit_bp
+from strategy.routes import strategy_bp
 import os
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -295,6 +296,7 @@ blueprints = [
     sg_audit_bp,
     azure_audit_bp,
     gcp_audit_bp,
+    strategy_bp,
 ]
 
 for bp in blueprints:
