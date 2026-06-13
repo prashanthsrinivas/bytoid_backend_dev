@@ -62,23 +62,35 @@ def pick_best_artifact(candidates):
     return ranked[0][0]
 
 
+# Stable answer value that marks an evidence question as having no available
+# evidence (→ the evidence is treated as inadmissible and the question is
+# discarded). Generated questions also carry an explicit "C" discard option;
+# this sentinel lets the frontend offer the same choice on older questions that
+# were generated before the discard option existed. Keep in sync with the
+# frontend constant of the same name in EvidenceQuestionCard.tsx.
+NO_EVIDENCE_ANSWER = "__no_evidence__"
+
+
 def _evidence_question_options(policy):
     """Option set for a generated evidence-based question, gated by the
     artifact's response policy. ``evidence_only`` (the default) drops the
-    free-text answer option so the user must upload the evidence itself."""
+    free-text answer option so the user must upload the evidence itself. Both
+    policies offer a discard option ("I don't have this evidence") so a user
+    without the evidence can mark it inadmissible instead of being stuck."""
     from config_evidences.evidence_helpers import RESPONSE_POLICY_EVIDENCE_ONLY
 
     if policy == RESPONSE_POLICY_EVIDENCE_ONLY:
         return (
-            {"B": "Upload new evidence"},
-            {"upload_options": ["B"], "text_options": []},
+            {"B": "Upload new evidence", "C": "I don't have this evidence"},
+            {"upload_options": ["B"], "text_options": [], "discard_options": ["C"]},
         )
     return (
         {
             "A": "Provide a verbal / text answer",
             "B": "Upload new evidence",
+            "C": "I don't have this evidence",
         },
-        {"upload_options": ["B"], "text_options": ["A"]},
+        {"upload_options": ["B"], "text_options": ["A"], "discard_options": ["C"]},
     )
 
 
@@ -4485,6 +4497,7 @@ class WorkflowRunnerV2:
                                     "options": _options,
                                     "upload_options": _opt_meta["upload_options"],
                                     "text_options": _opt_meta["text_options"],
+                                    "discard_options": _opt_meta["discard_options"],
                                     "user_answer": None,
                                     "comment": None,
                                     "evidence_artifact": artifact,
@@ -4899,7 +4912,10 @@ class WorkflowRunnerV2:
                 ),
             }
 
-        if user_answer in discard_options:
+        if user_answer in discard_options or user_answer == NO_EVIDENCE_ANSWER:
+            # User has no evidence → the evidence is inadmissible; drop the
+            # question. NO_EVIDENCE_ANSWER covers questions generated before the
+            # explicit "C" discard option existed (their discard_options is empty).
             self.workflow_json["evidence_based_questions"] = [
                 q for q in evidence_based_questions if q.get("id") != qid
             ]
