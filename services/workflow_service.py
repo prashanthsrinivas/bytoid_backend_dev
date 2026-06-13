@@ -4533,16 +4533,21 @@ class WorkflowRunnerV2:
             "questions_needing_evidence": questions_needing_evidence,
         }
 
-    async def answer_ques_cloud_bk(self, cloud_payload, step_id, raw_ref, connectors):
-        """Auto-fill assigned questions from already-fetched cloud REST data.
+    async def answer_ques_cloud_bk(
+        self, cloud_payload, step_id, raw_ref, connectors, job_id=None
+    ):
+        """Auto-fill assigned questions from the grounded cloud posture brief.
 
-        Unlike answer_ques_file_bk (evidence-artifact centric), this reads the
-        latest cloud run JSON directly: per UNANSWERED question it asks the AI to
-        answer (within the question's options when present) and produce a short
-        justification, which is stored as the question's comment. Fills BLANKS
-        ONLY and never overwrites a user-entered answer/comment. `raw_ref` (an S3
-        key holding the fetched JSON) and `connectors` are stamped onto each
-        filled question as `autofill_source` so the UI can reveal the source data.
+        ``cloud_payload`` is the deterministic posture brief (positive aspects +
+        key findings + compliance coverage — see ``playbook.posture_brief``), so
+        the AI can answer questions about what is *correctly configured*, not just
+        what is wrong. UNANSWERED questions are sent to the AI in BATCHES (fewer
+        calls, more answered, lower cost); each is answered within its options
+        when present, with a short justification stored as the question's comment.
+        Fills BLANKS ONLY and never overwrites a user-entered answer/comment.
+        ``raw_ref`` (an S3 key holding the source data) and ``connectors`` are
+        stamped onto each filled question as ``autofill_source`` so the UI can
+        reveal the source. ``job_id`` (when set) drives the live progress log.
         """
         import re as _re
 
@@ -4578,8 +4583,9 @@ class WorkflowRunnerV2:
                     if out.get("user_answer"):
                         answered_qids.add(out.get("id"))
 
-        # The fetched JSON can be large; cap the prompt context.
-        MAX_CONTEXT = 16000
+        # The posture brief is compact (positives + key findings + compliance),
+        # so allow plenty of room rather than truncating away the signal.
+        MAX_CONTEXT = 60000
         context = str(cloud_payload)[:MAX_CONTEXT]
         autofill_source = {
             "type": "cloud",
@@ -4613,22 +4619,54 @@ class WorkflowRunnerV2:
                 _apply(chat.get("output", []))
             return updated
 
+        pending = [q for q in assigned_ques if q.get("id") not in answered_qids]
+
+        # Optional live progress log (Redis-backed; see playbook.job_progress).
+        async def _emit(**kwargs):
+            if not job_id:
+                return
+            try:
+                from playbook.job_progress import add_entry
+                await add_entry(job_id, **kwargs)
+            except Exception:
+                pass
+
+        try:
+            from playbook.job_progress import init_progress
+            if job_id:
+                await init_progress(job_id, total=len(pending))
+        except Exception:
+            pass
+
+        # Batch the questions: one AI call per chunk (the model sees positives and
+        # negatives together → answers more) instead of one call per question.
+        BATCH_SIZE = 20
         answered_now = 0
-        for q in [q for q in assigned_ques if q.get("id") not in answered_qids]:
-            qid = q.get("id")
+        for start in range(0, len(pending), BATCH_SIZE):
+            batch = pending[start : start + BATCH_SIZE]
+            q_lines = [
+                {
+                    "id": q.get("id"),
+                    "question": q.get("question", ""),
+                    "options": q.get("options", {}),
+                }
+                for q in batch
+            ]
+            by_id = {}
             try:
                 prompt = (
-                    "You are a STRICT QUESTION ANSWERING ENGINE for a vendor/cloud "
-                    "risk assessment. Use ONLY the CLOUD API DATA below. Do NOT guess. "
-                    "If the data does not support an answer, return null.\n\n"
-                    f"CLOUD API DATA (JSON):\n{context}\n\n"
-                    f"QUESTION ID: {qid}\n"
-                    f"Question: {q.get('question', '')}\n"
-                    f"Options: {json.dumps(q.get('options', {}), ensure_ascii=False)}\n\n"
-                    'Return ONLY JSON: {"id": "...", '
-                    '"user_answer": "<one of the options if options are provided, '
-                    'else a concise answer>" OR null, '
-                    '"summary": "<=40 word justification citing the data"}'
+                    "You are a STRICT QUESTION ANSWERING ENGINE for a cloud/vendor "
+                    "risk assessment. Use ONLY the SECURITY POSTURE BRIEF below "
+                    "(positive aspects, key findings, and compliance coverage). Do "
+                    "NOT guess. If the brief does not support an answer for a "
+                    "question, return null for that question.\n\n"
+                    f"SECURITY POSTURE BRIEF:\n{context}\n\n"
+                    f"QUESTIONS (JSON array):\n{json.dumps(q_lines, ensure_ascii=False)}\n\n"
+                    "Return ONLY a JSON array, one object per question: "
+                    '[{"id": "<question id>", '
+                    '"user_answer": "<one of the options if provided, else a concise '
+                    'answer>" OR null, '
+                    '"summary": "<=40 word justification citing the brief"}]'
                 )
                 resp = await get_fireworks_response2(
                     user_message=prompt,
@@ -4639,21 +4677,54 @@ class WorkflowRunnerV2:
                 )
                 parsed = _safe_json_load(resp)
                 if isinstance(parsed, list):
-                    parsed = parsed[0] if parsed else {}
-                answer = parsed.get("user_answer") if isinstance(parsed, dict) else None
-                summary = parsed.get("summary") if isinstance(parsed, dict) else None
+                    items = parsed
+                elif isinstance(parsed, dict) and isinstance(parsed.get("results"), list):
+                    items = parsed["results"]
+                elif isinstance(parsed, dict):
+                    items = [parsed]
+                else:
+                    items = []
+                by_id = {
+                    str(it.get("id")): it
+                    for it in items
+                    if isinstance(it, dict) and it.get("id") is not None
+                }
+            except Exception as e:
+                self.logger.error(
+                    "Cloud autofill batch failed: %s", e, exc_info=IS_DEV
+                )
 
+            for q in batch:
+                qid = q.get("id")
+                it = by_id.get(str(qid)) or {}
+                answer = it.get("user_answer")
+                summary = it.get("summary")
+                qtext = q.get("question", "")
                 if answer and str(answer).strip() not in ("", "null", "N/A", "None"):
                     comment = (
                         f"AI (cloud auto-fill): {str(summary).strip()}"
                         if summary
                         else "AI cloud auto-fill"
                     )
-                    answered_now += persist(qid, str(answer).strip(), comment)
-            except Exception as e:
-                self.logger.error(
-                    "Cloud autofill question %s failed: %s", qid, e, exc_info=IS_DEV
-                )
+                    filled = persist(qid, str(answer).strip(), comment)
+                    answered_now += filled
+                    await _emit(
+                        status="filled" if filled else "skipped",
+                        question=qtext,
+                        answer=str(answer).strip(),
+                        detail=(str(summary).strip() if summary else None),
+                        inc_processed=True,
+                        inc_answered=bool(filled),
+                    )
+                else:
+                    await _emit(
+                        status="skipped",
+                        question=qtext,
+                        detail="No supporting data in the posture brief",
+                        inc_processed=True,
+                    )
+
+        await _emit(status="done", detail=f"Filled {answered_now} of {len(pending)}")
 
         self.previous_data = execution_data
         self.chat_history = chats

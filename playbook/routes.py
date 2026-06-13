@@ -359,6 +359,16 @@ def job_status(job_id):
     if not job:
         return jsonify({"status": "not_found"}), 404
 
+    # Merge the live auto-fill progress log (if any) so the UI can render it.
+    try:
+        from playbook.job_progress import get_progress
+
+        progress = _run_async(get_progress(job_id))
+        if progress and isinstance(job, dict):
+            job["progress"] = progress
+    except Exception as e:
+        logger.debug("job_status progress merge failed: %s", e)
+
     return jsonify(job)
 
 
@@ -2860,7 +2870,8 @@ async def answer_ques_cloud_bk(
     the selected connectors, persist the raw JSON for the UI reveal button, and
     AI-fill the workflow's assigned questions from it."""
     from runbook.utils import resolve_connector_endpoint_data
-    from playbook.cloud_autofill import resolve_posture_payload, POSTURE_PROVIDERS
+    from playbook.cloud_autofill import POSTURE_PROVIDERS
+    from playbook.posture_brief import build_posture_brief
 
     credits = Credits()
     if not filename.lower().endswith(".json"):
@@ -2885,14 +2896,16 @@ async def answer_ques_cloud_bk(
     raw_blob = []
     payload_parts = []
 
-    # 1a. Latest security-posture snapshots (preferred source).
+    # 1a. Latest security-posture snapshots (preferred source) — grounded brief
+    #     including positive aspects, key findings, and compliance coverage, so
+    #     the AI can answer "what is correctly configured?" questions too.
     if posture_selections:
-        posture_text, posture_blob = resolve_posture_payload(
-            user_id, posture_selections, max_chars=16000
+        brief = build_posture_brief(user_id, posture_selections)
+        if brief.get("brief_text"):
+            payload_parts.append(brief["brief_text"])
+        raw_blob.append(
+            {"source": "posture_brief", "providers": brief.get("providers", [])}
         )
-        if posture_text:
-            payload_parts.append(posture_text)
-        raw_blob.extend(posture_blob)
 
     # 1b. Legacy RADAR connector endpoints (back-compat).
     if legacy_connectors:
@@ -2978,7 +2991,7 @@ async def answer_ques_cloud_bk(
         credits=credits,
     ) as runner:
         result = await runner.answer_ques_cloud_bk(
-            cloud_payload, step_id, raw_ref, connectors or []
+            cloud_payload, step_id, raw_ref, connectors or [], job_id=job_id
         )
 
     if isinstance(result, dict):
@@ -3191,6 +3204,43 @@ def cloud_autofill_availability():
         return jsonify({"status": "success", "providers": providers})
     except Exception as e:
         logger.error("cloud_autofill_availability failed: %s", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@playbook_bp.route("/workflow/cloud_autofill/posture", methods=["GET"])
+@permission_required_body("workflow.process.view")
+def cloud_autofill_posture():
+    """Grounded "overall security posture" brief (positive aspects + key findings
+    + compliance coverage) for the requested providers. Single source of truth
+    shared by the CSPM dashboard, the auto-fill dialog, and the assessment page;
+    the auto-fill itself reads the same brief.
+
+    Query: user_id, providers (csv of aws/azure/gcp; default all available)."""
+    try:
+        user_id = request.args.get("user_id")
+        if not user_id:
+            return jsonify({"status": "error", "message": "user_id required"}), 400
+        logged_in_user_id, user_id = parse_composite_user_id(user_id)
+
+        from playbook.cloud_autofill import POSTURE_PROVIDERS, get_provider_availability
+        from playbook.posture_brief import build_posture_brief
+
+        requested = [
+            p.strip().lower()
+            for p in (request.args.get("providers") or "").split(",")
+            if p.strip()
+        ]
+        if requested:
+            providers = [p for p in requested if p in POSTURE_PROVIDERS]
+        else:
+            # Default: every provider that has a posture snapshot.
+            avail = get_provider_availability(user_id)
+            providers = [p for p, v in avail.items() if v.get("available")]
+
+        brief = build_posture_brief(user_id, [{"provider": p} for p in providers])
+        return jsonify({"status": "success", **brief})
+    except Exception as e:
+        logger.error("cloud_autofill_posture failed: %s", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
