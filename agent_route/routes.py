@@ -369,7 +369,6 @@ def get_training_settings():
 
 @agent_bps.route("/process-query-key-og", methods=["POST"])
 @permission_required_body("intake.bytoid_reference")
-@permission_required_body("intake.bytoid_reference")
 def checkquerywithApiKeyog():
     try:
         # print("Query made by:", session.get("user", {}))

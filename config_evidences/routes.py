@@ -273,6 +273,11 @@ def add_evidence_entry():
         if data.get("responsePolicy") is not None:
             entry_data["responsePolicy"] = data.get("responsePolicy")
 
+        # Core fields must be present — without them _add_entry below crashes
+        # (500). Reject up front with a clean 400 instead.
+        if not entry_data.get("type") or not entry_data.get("artifact"):
+            return jsonify({"error": "type and artifact are required"}), 400
+
         try:
             _validate_evidence_entry(entry_data)
         except Exception as e:

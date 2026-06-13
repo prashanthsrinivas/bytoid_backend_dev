@@ -29,10 +29,98 @@ logger = get_logger(__name__)
 
 # ── connection / serialization helpers ────────────────────────────────────────
 
+# Lazy schema bootstrap — the strategy tables are defined in create_db.py, but
+# environments where that setup script hasn't run (e.g. the demo DB) would 500 on
+# the first INSERT. These mirror create_db.py and are idempotent.
+_SCHEMA_READY = False
+_SCHEMA_DDL = [
+    """
+    CREATE TABLE IF NOT EXISTS strategic_objectives (
+        id VARCHAR(36) PRIMARY KEY, owner_user_id VARCHAR(36) NOT NULL,
+        org_id VARCHAR(36), created_by VARCHAR(36), title VARCHAR(255) NOT NULL,
+        description TEXT, status VARCHAR(50) DEFAULT 'draft',
+        start_date DATE, target_date DATE,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_objective_owner (owner_user_id), KEY idx_objective_org (org_id, status)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS programs (
+        id VARCHAR(36) PRIMARY KEY, objective_id VARCHAR(36) NOT NULL,
+        owner_user_id VARCHAR(36) NOT NULL, org_id VARCHAR(36), created_by VARCHAR(36),
+        name VARCHAR(255) NOT NULL, description TEXT, status VARCHAR(50) DEFAULT 'draft',
+        start_date DATE, target_date DATE,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_program_objective (objective_id), KEY idx_program_owner (owner_user_id),
+        KEY idx_program_org (org_id, status)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS projects (
+        id VARCHAR(36) PRIMARY KEY, objective_id VARCHAR(36) NOT NULL,
+        program_id VARCHAR(36), owner_user_id VARCHAR(36) NOT NULL, org_id VARCHAR(36),
+        created_by VARCHAR(36), name VARCHAR(255) NOT NULL, description TEXT,
+        status VARCHAR(50) DEFAULT 'draft', start_date DATE, target_date DATE,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_project_objective (objective_id), KEY idx_project_program (program_id),
+        KEY idx_project_owner (owner_user_id), KEY idx_project_org (org_id, status)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS project_doc_links (
+        id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+        policy_id VARCHAR(64) NOT NULL,
+        doc_type ENUM('policy', 'procedure', 'standard') NOT NULL DEFAULT 'policy',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_project_doc (project_id, policy_id),
+        KEY idx_doc_project (project_id), KEY idx_doc_policy (policy_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS project_tracker_links (
+        id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
+        tracker_id VARCHAR(64) NOT NULL, pinned TINYINT(1) DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_project_tracker (project_id, tracker_id),
+        KEY idx_tracker_project (project_id), KEY idx_tracker_tracker (tracker_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS strategy_milestones (
+        id VARCHAR(36) PRIMARY KEY,
+        parent_type ENUM('objective', 'program', 'project') NOT NULL,
+        parent_id VARCHAR(36) NOT NULL, title VARCHAR(255) NOT NULL,
+        due_date DATE, status VARCHAR(50) DEFAULT 'planned',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_milestone_parent (parent_type, parent_id)
+    )
+    """,
+]
+
+
+def _ensure_schema(conn) -> None:
+    """Create the strategy tables once per process if they're absent."""
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
+    try:
+        with conn.cursor() as cur:
+            for ddl in _SCHEMA_DDL:
+                cur.execute(ddl)
+        conn.commit()
+        _SCHEMA_READY = True
+    except Exception as e:  # don't let bootstrap failure mask the real op
+        logger.warning("strategy schema bootstrap failed: %s", e)
+
+
 def _conn():
     conn = connect_to_rds()
     if conn is None:
         raise ConnectionError("No RDS connection available.")
+    _ensure_schema(conn)
     return conn
 
 
