@@ -129,7 +129,11 @@ class WebSocketService:
                 await asyncio.to_thread(
                     self.client.post_to_connection,
                     ConnectionId=conn_id,
-                    Data=json.dumps(payload).encode("utf-8"),
+                    # default=str so a non-JSON-serializable field (datetime,
+                    # Decimal, …) anywhere in the payload/result can't raise and
+                    # silently drop the whole push — which leaves the browser
+                    # waiting on a result that never arrives.
+                    Data=json.dumps(payload, default=str).encode("utf-8"),
                 )
 
             except ClientError as e:
