@@ -177,6 +177,8 @@ PERMISSIONS = {
     "policyhub.framework.create": "Upload Frameworks",
     "policyhub.framework.delete": "Delete Frameworks",
     "policyhub.framework.view": "View Frameworks",
+    # ================= GRC DASHBOARDS =================
+    "grc.dashboard.view": "View GRC Dashboards",
     # ================= STRATEGY GOVERNANCE =================
     "strategy.view": "View Strategy",
     "strategy.create": "Create Strategy Items",
