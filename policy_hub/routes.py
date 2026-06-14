@@ -3688,6 +3688,93 @@ def policy_tracker_map(policy_id: str):
     }), 200
 
 
+@policy_hub_bp.route("/<policy_id>/relationship-map", methods=["GET"])
+@permission_required_body("policyhub.view")
+def policy_relationship_map(policy_id: str):
+    """Map a document to the specific tracker cells it maps to, grouped by
+    tracker. Mirrors the strategy roadmap "tree the frontend renders as a graph":
+    doc → tracker (a heading summarizing its cells) → cell. Query: user_id.
+    """
+    baseuser = request.args.get("user_id")
+    if not baseuser or not policy_id:
+        return jsonify({"error": "user_id is required"}), 400
+    owner_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    item = _read_policy_yaml(owner_id, _s3_key(owner_id, policy_id))
+    if not item:
+        return jsonify({"error": "Policy not found"}), 404
+
+    from services.statement_tracker_refs import get_refs_for_policy
+    from strategy import rollup as _rollup
+
+    stmt_index = {s["statement_id"]: s for s in _statements_from_item(item)}
+    refs = get_refs_for_policy(policy_id)
+
+    by_tracker: dict[str, dict] = {}
+    for r in refs:
+        tid = r.get("tracker_id")
+        if not tid:
+            continue
+        grp = by_tracker.setdefault(
+            tid,
+            {"tracker_id": tid, "tracker_abbrev": r.get("tracker_abbrev"), "cells": []},
+        )
+        st = stmt_index.get(r.get("statement_id"), {})
+        grp["cells"].append({
+            "row_id": r.get("row_id"),
+            "column_id": r.get("column_id"),
+            "statement_id": r.get("statement_id"),
+            "display_number": st.get("display_number"),
+            "statement_text": st.get("text"),
+            "status": r.get("status"),
+        })
+
+    trackers = []
+    for grp in by_tracker.values():
+        summary = _rollup.rollup_status(grp["cells"])
+        abbr = grp.get("tracker_abbrev") or "Tracker"
+        failing = summary.get("failed", 0)
+        grp["summary"] = summary
+        grp["heading"] = (
+            f"{abbr} — {len(grp['cells'])} cells"
+            + (f" · {failing} failing" if failing else "")
+        )
+        trackers.append(grp)
+    trackers.sort(key=lambda g: (g.get("tracker_abbrev") or ""))
+
+    return jsonify({
+        "policy_id": policy_id,
+        "doc_type": item.get("type", "policy"),
+        "title": item.get("title"),
+        "doc_ref": display_doc_ref(item.get("doc_ref")),
+        "summary": _rollup.rollup_status([c for g in trackers for c in g["cells"]]),
+        "trackers": trackers,
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+    }), 200
+
+
+@policy_hub_bp.route("/<policy_id>/strategy-links", methods=["GET"])
+@permission_required_body("policyhub.view")
+def policy_strategy_links(policy_id: str):
+    """Which strategy programs/projects link this document. Query: user_id.
+
+    Policies/standards surface under ``programs``; procedures under ``projects``.
+    Powers the "Linked to" panel in the Policy Hub.
+    """
+    baseuser = request.args.get("user_id")
+    if not baseuser or not policy_id:
+        return jsonify({"error": "user_id is required"}), 400
+    owner_id, err = _check_policy_share_access(baseuser, policy_id)
+    if err:
+        return err
+
+    from strategy.helper import get_strategy_links_for_doc
+    links = get_strategy_links_for_doc(policy_id)
+    return jsonify({"policy_id": policy_id, **links}), 200
+
+
 # ── 4. DELETE ─────────────────────────────────────────────────────────────────
 
 

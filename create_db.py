@@ -272,6 +272,19 @@ def create_tables():
                 KEY idx_doc_policy (policy_id)
             )
             """,
+            # Programs link to policies & standards; projects link to procedures.
+            """
+            CREATE TABLE IF NOT EXISTS program_doc_links (
+                id VARCHAR(36) PRIMARY KEY,
+                program_id VARCHAR(36) NOT NULL,
+                policy_id VARCHAR(64) NOT NULL,
+                doc_type ENUM('policy', 'standard') NOT NULL DEFAULT 'policy',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_program_doc (program_id, policy_id),
+                KEY idx_pdoc_program (program_id),
+                KEY idx_pdoc_policy (policy_id)
+            )
+            """,
             """
             CREATE TABLE IF NOT EXISTS project_tracker_links (
                 id VARCHAR(36) PRIMARY KEY,

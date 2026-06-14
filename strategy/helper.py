@@ -80,6 +80,16 @@ _SCHEMA_DDL = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS program_doc_links (
+        id VARCHAR(36) PRIMARY KEY, program_id VARCHAR(36) NOT NULL,
+        policy_id VARCHAR(64) NOT NULL,
+        doc_type ENUM('policy', 'standard') NOT NULL DEFAULT 'policy',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_program_doc (program_id, policy_id),
+        KEY idx_pdoc_program (program_id), KEY idx_pdoc_policy (policy_id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS project_tracker_links (
         id VARCHAR(36) PRIMARY KEY, project_id VARCHAR(36) NOT NULL,
         tracker_id VARCHAR(64) NOT NULL, pinned TINYINT(1) DEFAULT 1,
@@ -114,6 +124,32 @@ def _ensure_schema(conn) -> None:
         _SCHEMA_READY = True
     except Exception as e:  # don't let bootstrap failure mask the real op
         logger.warning("strategy schema bootstrap failed: %s", e)
+        return
+    _migrate_legacy_doc_links(conn)
+
+
+def _migrate_legacy_doc_links(conn) -> None:
+    """Move policy/standard rows off projects and onto their parent program.
+
+    One-time, idempotent, best-effort. Policies & standards now attach to
+    programs; only rows whose project has a ``program_id`` can be moved, and the
+    old project-level rows are dropped afterward. Prod is likely empty (recent
+    dev work) so this is a no-op there.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT IGNORE INTO program_doc_links (id, program_id, policy_id, doc_type) "
+                "SELECT UUID(), pr.program_id, l.policy_id, l.doc_type "
+                "FROM project_doc_links l JOIN projects pr ON pr.id = l.project_id "
+                "WHERE l.doc_type IN ('policy','standard') AND pr.program_id IS NOT NULL"
+            )
+            cur.execute(
+                "DELETE FROM project_doc_links WHERE doc_type IN ('policy','standard')"
+            )
+        conn.commit()
+    except Exception as e:  # never block normal operation on a migration hiccup
+        logger.warning("strategy doc-link migration skipped: %s", e)
 
 
 def _conn():
@@ -200,8 +236,11 @@ def user_in_scope(reference_user_id: str, target_user_id: str, conn=None) -> boo
 
 # ── generic CRUD helpers ──────────────────────────────────────────────────────
 
-_OBJECTIVE_COLS = "id, owner_user_id, org_id, created_by, title, description, status, start_date, target_date, created_at, updated_at"
-_PROGRAM_COLS = "id, objective_id, owner_user_id, org_id, created_by, name, description, status, start_date, target_date, created_at, updated_at"
+# Objectives & programs are ongoing — they carry no start/end date (an objective
+# can be re-pointed; a program never ends). Only projects are time-bound. The
+# date columns remain in the schema (nullable) but are no longer read or written.
+_OBJECTIVE_COLS = "id, owner_user_id, org_id, created_by, title, description, status, created_at, updated_at"
+_PROGRAM_COLS = "id, objective_id, owner_user_id, org_id, created_by, name, description, status, created_at, updated_at"
 _PROJECT_COLS = "id, objective_id, program_id, owner_user_id, org_id, created_by, name, description, status, start_date, target_date, created_at, updated_at"
 
 
@@ -214,13 +253,12 @@ def create_objective(org_id, owner_user_id, created_by, data) -> dict:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 "INSERT INTO strategic_objectives "
-                "(id, owner_user_id, org_id, created_by, title, description, status, start_date, target_date) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "(id, owner_user_id, org_id, created_by, title, description, status) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                 (
                     oid, owner_user_id, org_id, created_by,
                     data.get("title"), data.get("description"),
                     data.get("status", "draft"),
-                    _date(data.get("start_date")), _date(data.get("target_date")),
                 ),
             )
         conn.commit()
@@ -259,9 +297,7 @@ def get_objective(oid, org_id) -> dict | None:
 
 
 def update_objective(oid, org_id, data) -> dict | None:
-    fields, params = _build_update(
-        data, ["title", "description", "status"], date_fields=["start_date", "target_date"]
-    )
+    fields, params = _build_update(data, ["title", "description", "status"])
     if data.get("owner_user_id"):
         fields.append("owner_user_id=%s")
         params.append(data["owner_user_id"])
@@ -289,7 +325,13 @@ def delete_objective(oid, org_id) -> int:
                 "DELETE FROM strategic_objectives WHERE id=%s AND org_id=%s", (oid, org_id)
             )
             deleted = cur.rowcount
-            # Cascade in app layer (no hard FKs): drop child programs/projects.
+            # Cascade in app layer (no hard FKs): drop child programs/projects and
+            # the programs' policy/standard links.
+            cur.execute(
+                "DELETE FROM program_doc_links WHERE program_id IN "
+                "(SELECT id FROM programs WHERE objective_id=%s AND org_id=%s)",
+                (oid, org_id),
+            )
             cur.execute("DELETE FROM programs WHERE objective_id=%s AND org_id=%s", (oid, org_id))
             cur.execute("DELETE FROM projects WHERE objective_id=%s AND org_id=%s", (oid, org_id))
         conn.commit()
@@ -307,13 +349,12 @@ def create_program(org_id, owner_user_id, created_by, data) -> dict:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 "INSERT INTO programs "
-                "(id, objective_id, owner_user_id, org_id, created_by, name, description, status, start_date, target_date) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "(id, objective_id, owner_user_id, org_id, created_by, name, description, status) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                 (
                     pid, data.get("objective_id"), owner_user_id, org_id, created_by,
                     data.get("name"), data.get("description"),
                     data.get("status", "draft"),
-                    _date(data.get("start_date")), _date(data.get("target_date")),
                 ),
             )
         conn.commit()
@@ -356,10 +397,7 @@ def get_program(pid, org_id) -> dict | None:
 
 
 def update_program(pid, org_id, data) -> dict | None:
-    fields, params = _build_update(
-        data, ["name", "description", "status", "objective_id"],
-        date_fields=["start_date", "target_date"],
-    )
+    fields, params = _build_update(data, ["name", "description", "status", "objective_id"])
     if data.get("owner_user_id"):
         fields.append("owner_user_id=%s")
         params.append(data["owner_user_id"])
@@ -385,6 +423,8 @@ def delete_program(pid, org_id) -> int:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute("DELETE FROM programs WHERE id=%s AND org_id=%s", (pid, org_id))
             deleted = cur.rowcount
+            # Drop the program's policy/standard links.
+            cur.execute("DELETE FROM program_doc_links WHERE program_id=%s", (pid,))
             # Detach projects from the deleted program (keep them under the objective).
             cur.execute("UPDATE projects SET program_id=NULL WHERE program_id=%s AND org_id=%s", (pid, org_id))
         conn.commit()
@@ -508,8 +548,16 @@ def _build_update(data, text_fields, date_fields=None):
 # ── project ↔ doc / tracker links ─────────────────────────────────────────────
 
 def link_doc(project_id, policy_id, doc_type) -> dict:
+    """Link a *procedure* to a project.
+
+    Projects own procedures only; policies and standards attach to programs
+    (see :func:`link_program_doc`). The column ENUM still permits the legacy
+    values, so the restriction is enforced here.
+    """
+    if doc_type not in (None, "", "procedure"):
+        raise ValueError("projects can only link procedures; link policies/standards to a program")
     lid = str(uuid.uuid4())
-    dt = doc_type if doc_type in ("policy", "procedure", "standard") else "policy"
+    dt = "procedure"
     conn = _conn()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
@@ -523,6 +571,42 @@ def link_doc(project_id, policy_id, doc_type) -> dict:
     finally:
         conn.close()
     return {"project_id": project_id, "policy_id": policy_id, "doc_type": dt}
+
+
+def link_program_doc(program_id, policy_id, doc_type) -> dict:
+    """Link a *policy* or *standard* to a program."""
+    dt = doc_type if doc_type in ("policy", "standard") else None
+    if dt is None:
+        raise ValueError("programs can only link policies or standards")
+    lid = str(uuid.uuid4())
+    conn = _conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "INSERT INTO program_doc_links (id, program_id, policy_id, doc_type) "
+                "VALUES (%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE doc_type=VALUES(doc_type)",
+                (lid, program_id, policy_id, dt),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"program_id": program_id, "policy_id": policy_id, "doc_type": dt}
+
+
+def unlink_program_doc(program_id, policy_id) -> int:
+    conn = _conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "DELETE FROM program_doc_links WHERE program_id=%s AND policy_id=%s",
+                (program_id, policy_id),
+            )
+            deleted = cur.rowcount
+        conn.commit()
+    finally:
+        conn.close()
+    return deleted
 
 
 def unlink_doc(project_id, policy_id) -> int:
@@ -581,6 +665,15 @@ def _linked_docs(project_id, conn) -> list:
         return [dict(r) for r in (cur.fetchall() or [])]
 
 
+def _program_linked_docs(program_id, conn) -> list:
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            "SELECT policy_id, doc_type FROM program_doc_links WHERE program_id=%s",
+            (program_id,),
+        )
+        return [dict(r) for r in (cur.fetchall() or [])]
+
+
 def _pinned_trackers(project_id, conn) -> list:
     with conn.cursor(pymysql.cursors.DictCursor) as cur:
         cur.execute(
@@ -632,6 +725,63 @@ def get_project_links(project_id) -> dict:
     return {"docs": docs, "trackers": list(auto.values())}
 
 
+def get_program_links(program_id) -> dict:
+    """Return a program's linked policies/standards and the trackers that already
+    reference them (auto-surfaced via ``statement_tracker_refs``)."""
+    from services.statement_tracker_refs import get_trackers_for_policy
+
+    conn = _conn()
+    try:
+        docs = _program_linked_docs(program_id, conn)
+    finally:
+        conn.close()
+
+    auto = {}
+    for d in docs:
+        try:
+            for t in get_trackers_for_policy(d["policy_id"]) or []:
+                tid = t.get("tracker_id")
+                if not tid:
+                    continue
+                entry = auto.setdefault(
+                    tid,
+                    {"tracker_id": tid, "tracker_abbrev": t.get("tracker_abbrev"),
+                     "mapped_row_count": 0, "source": "auto"},
+                )
+                entry["mapped_row_count"] += int(t.get("mapped_row_count", 0) or 0)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("get_program_links: tracker lookup failed for %s: %s", d.get("policy_id"), exc)
+
+    return {"docs": docs, "trackers": list(auto.values())}
+
+
+def get_strategy_links_for_doc(policy_id) -> dict:
+    """Reverse lookup for the Policy Hub: which programs and projects link a doc.
+
+    Policies/standards surface under ``programs``; procedures under ``projects``.
+    """
+    conn = _conn()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT l.program_id, l.doc_type, p.name, p.objective_id "
+                "FROM program_doc_links l JOIN programs p ON p.id = l.program_id "
+                "WHERE l.policy_id=%s",
+                (policy_id,),
+            )
+            programs = [dict(r) for r in (cur.fetchall() or [])]
+            cur.execute(
+                "SELECT l.project_id, l.doc_type, p.name, p.objective_id, p.program_id "
+                "FROM project_doc_links l JOIN projects p ON p.id = l.project_id "
+                "WHERE l.policy_id=%s",
+                (policy_id,),
+            )
+            projects = [dict(r) for r in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+    return {"programs": programs, "projects": projects}
+
+
 def _project_refs(project_id, conn) -> list:
     """All statement_tracker_refs across a project's linked docs."""
     from services.statement_tracker_refs import get_refs_for_policy
@@ -648,6 +798,22 @@ def _project_refs(project_id, conn) -> list:
     return refs
 
 
+def _program_refs(program_id, conn) -> list:
+    """All statement_tracker_refs across a program's own linked policies/standards."""
+    from services.statement_tracker_refs import get_refs_for_policy
+
+    refs = []
+    for d in _program_linked_docs(program_id, conn):
+        try:
+            for r in get_refs_for_policy(d["policy_id"]) or []:
+                rr = dict(r)
+                rr.setdefault("doc_type", d.get("doc_type"))
+                refs.append(rr)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("_program_refs: refs lookup failed for %s: %s", d.get("policy_id"), exc)
+    return refs
+
+
 def compute_project_health(project_id) -> dict:
     conn = _conn()
     try:
@@ -657,11 +823,28 @@ def compute_project_health(project_id) -> dict:
     return _rollup.rollup_status(refs)
 
 
+def compute_program_health(program_id, org_id) -> dict:
+    """Program health combines the program's own policy/standard refs with the
+    health of its child projects."""
+    conn = _conn()
+    try:
+        own = _rollup.rollup_status(_program_refs(program_id, conn))
+    finally:
+        conn.close()
+    projects = list_projects(org_id, program_id=program_id)
+    child = [compute_project_health(p["id"]) for p in projects]
+    return _rollup.aggregate_rollups([own, *child])
+
+
 def compute_objective_health(objective_id, org_id) -> dict:
-    """Roll an objective's health up from all its projects (under programs and
-    attached directly to the objective)."""
-    projects = list_projects(org_id, objective_id=objective_id)
-    summaries = [compute_project_health(p["id"]) for p in projects]
+    """Roll an objective's health up from its programs (each including their own
+    policy/standard refs) and any projects attached directly to the objective."""
+    programs = list_programs(org_id, objective_id=objective_id)
+    summaries = [compute_program_health(pr["id"], org_id) for pr in programs]
+    direct_projects = [
+        p for p in list_projects(org_id, objective_id=objective_id) if not p.get("program_id")
+    ]
+    summaries += [compute_project_health(p["id"]) for p in direct_projects]
     return _rollup.aggregate_rollups(summaries)
 
 
@@ -728,10 +911,14 @@ def get_roadmap(org_id) -> dict:
     # Per-project health.
     health_by_project = {p["id"]: compute_project_health(p["id"]) for p in projects}
 
+    # Per-program health from the program's OWN linked policies/standards.
     # Milestones for every node.
     all_ids = [o["id"] for o in objectives] + [p["id"] for p in programs] + [p["id"] for p in projects]
     conn = _conn()
     try:
+        program_doc_health = {
+            pr["id"]: _rollup.rollup_status(_program_refs(pr["id"], conn)) for pr in programs
+        }
         milestones = _milestones_for(all_ids, conn)
     finally:
         conn.close()
@@ -764,7 +951,10 @@ def get_roadmap(org_id) -> dict:
         obj["direct_projects"] = obj_direct
 
         for pr in obj_programs:
-            pr["health"] = _rollup.aggregate_rollups([p.get("health") for p in pr["projects"]])
+            pr["doc_health"] = program_doc_health.get(pr["id"])
+            pr["health"] = _rollup.aggregate_rollups(
+                [pr["doc_health"]] + [p.get("health") for p in pr["projects"]]
+            )
 
         child_summaries = [pr["health"] for pr in obj_programs] + [p.get("health") for p in obj_direct]
         obj["health"] = _rollup.aggregate_rollups(child_summaries)
@@ -785,7 +975,12 @@ def get_drilldown(project_id, org_id) -> dict | None:
 
     conn = _conn()
     try:
+        # The project's own procedure refs plus the parent program's policy/
+        # standard refs — so a failing path resolves to the exact tracker cell
+        # regardless of which level the document is attached to.
         refs = _project_refs(project_id, conn)
+        if project.get("program_id"):
+            refs = refs + _program_refs(project["program_id"], conn)
     finally:
         conn.close()
 

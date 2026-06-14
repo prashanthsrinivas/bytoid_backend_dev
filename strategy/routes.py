@@ -208,6 +208,45 @@ def delete_program(pid):
     return jsonify({"deleted": helper.delete_program(pid, org_id)}), 200
 
 
+# Program links (policies & standards) -----------------------------------------
+
+@strategy_bp.route("/program/<pid>/links", methods=["GET"])
+@permission_required_body("strategy.view")
+@_safe
+def program_links(pid):
+    _, org_id, _ = _resolve_context()
+    if not helper.get_program(pid, org_id):
+        return _json_error("Program not found", 404)
+    return jsonify(helper.get_program_links(pid)), 200
+
+
+@strategy_bp.route("/program/<pid>/link-doc", methods=["POST"])
+@permission_required_body("strategy.edit")
+@_safe
+def link_program_doc(pid):
+    """Link a policy or standard to a program. Procedures attach to projects."""
+    _, org_id, _ = _resolve_context()
+    body = _body()
+    policy_id = (body.get("policy_id") or "").strip()
+    if not policy_id:
+        return _json_error("policy_id is required", 400)
+    if not helper.get_program(pid, org_id):
+        return _json_error("Program not found", 404)
+    return jsonify(helper.link_program_doc(pid, policy_id, body.get("doc_type", "policy"))), 200
+
+
+@strategy_bp.route("/program/<pid>/unlink-doc", methods=["POST"])
+@permission_required_body("strategy.edit")
+@_safe
+def unlink_program_doc(pid):
+    _, org_id, _ = _resolve_context()
+    body = _body()
+    policy_id = (body.get("policy_id") or "").strip()
+    if not policy_id:
+        return _json_error("policy_id is required", 400)
+    return jsonify({"deleted": helper.unlink_program_doc(pid, policy_id)}), 200
+
+
 # ── Projects ──────────────────────────────────────────────────────────────────
 
 @strategy_bp.route("/projects", methods=["GET"])
@@ -287,6 +326,7 @@ def project_links(pid):
 @permission_required_body("strategy.edit")
 @_safe
 def link_doc(pid):
+    """Link a procedure to a project. Policies/standards attach to programs."""
     _, org_id, _ = _resolve_context()
     body = _body()
     policy_id = (body.get("policy_id") or "").strip()
@@ -294,7 +334,7 @@ def link_doc(pid):
         return _json_error("policy_id is required", 400)
     if not helper.get_project(pid, org_id):
         return _json_error("Project not found", 404)
-    return jsonify(helper.link_doc(pid, policy_id, body.get("doc_type", "policy"))), 200
+    return jsonify(helper.link_doc(pid, policy_id, body.get("doc_type", "procedure"))), 200
 
 
 @strategy_bp.route("/project/<pid>/unlink-doc", methods=["POST"])
