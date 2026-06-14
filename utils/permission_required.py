@@ -210,6 +210,12 @@ def _evaluate_access(required_permission):
     owner_id = req_owner or actor_id
 
     conn = connect_to_rds()
+    if conn is None:
+        # No DB connection (e.g. pool exhausted) — fail closed with a clean,
+        # transient error instead of crashing on `conn.cursor()` / `conn.close()`
+        # (which would surface as an uncaught 500).
+        logger.error("permission check: no DB connection available")
+        return jsonify({"error": "Service temporarily unavailable"}), 503
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute(
@@ -326,8 +332,17 @@ def _evaluate_access(required_permission):
 
             return None
 
+    except Exception as exc:
+        # Any failure in the authorization check itself (DB error, malformed
+        # permissions JSON, …) must fail CLOSED with a clean response — never an
+        # uncaught exception that 500s the route before the handler even runs.
+        logger.error("permission check failed: %s", exc, exc_info=True)
+        return jsonify({"error": "Authorization check failed"}), 500
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception as close_err:
+            logger.debug("permission check: connection close failed: %s", close_err)
 
 
 def permission_required(required_permission):

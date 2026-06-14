@@ -370,9 +370,8 @@ def get_training_settings():
 @agent_bps.route("/process-query-key-og", methods=["POST"])
 @permission_required_body("intake.bytoid_reference")
 def checkquerywithApiKeyog():
+    connection = None
     try:
-        # print("Query made by:", session.get("user", {}))
-
         data = request.get_json(silent=True) or {}
         querytext = (data.get("query") or "").strip()
         api_key = data.get("api_key")
@@ -461,11 +460,19 @@ def checkquerywithApiKeyog():
         return jsonify(response_data), 200
 
     except Exception as e:
-        connection.rollback()
-        # print("❌ Error during query processing:", e)
+        # `connection` may be unbound if we failed before connect_to_rds()
+        # (e.g. input parsing) — guard rollback/close so the error handler can't
+        # itself raise a NameError and turn a clean failure into an uncaught 500.
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception as rb_err:
+                logger.debug("rollback failed in checkquerywithApiKeyog: %s", rb_err)
+        logger.error("Error in checkquerywithApiKeyog: %s", e, exc_info=True)
         return jsonify({"error": str(e)}), 400
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
 
 
 def get_website_url(api_key):

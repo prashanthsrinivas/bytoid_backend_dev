@@ -4240,12 +4240,88 @@ def _normalize_ai_framework(parsed) -> tuple[list[str], list[dict]]:
     return ordered_cols, rows
 
 
+def _finish_framework_job(job_id, result=None, error=None):
+    """Persist the terminal state of a framework-generation job to S3."""
+    job = _read_job(job_id) or {"job_id": job_id}
+    if error:
+        job["status"] = "error"
+        job["error"] = error
+        job["result"] = None
+    else:
+        job["status"] = "done"
+        job["error"] = None
+        job["result"] = result
+    _save_job(job_id, job)
+
+
+def _framework_generation_worker(job_id: str, name: str, user_id: str):
+    """Background thread: draft a framework's control set with Kimi 2.5 and store
+    the result in the job state for the client to poll. Kept OFF the request path
+    because a full control-set generation routinely exceeds the API gateway's
+    ~29s cap — a synchronous call 503s before the model finishes."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        prompt = _build_framework_prompt(name)
+        try:
+            response = loop.run_until_complete(
+                get_think_fire_response2_og(prompt, user_id, Credits())
+            )
+        except Exception as e:
+            logger.error("Framework AI generation failed for %r: %s", name, e)
+            _finish_framework_job(job_id, error="AI generation failed. Please try again.")
+            return
+
+        if response == "INSUFFICIENT":
+            _finish_framework_job(job_id, error="Insufficient AI credits")
+            return
+        if isinstance(response, str) and response.startswith(GUARDRAIL_BLOCKED):
+            _finish_framework_job(job_id, error=response)
+            return
+        if not response:
+            _finish_framework_job(
+                job_id, error="The AI returned an empty response. Please try again."
+            )
+            return
+
+        parsed = extract_json_safe(response)
+        columns, rows = _normalize_ai_framework(parsed)
+        if not rows:
+            logger.warning("Framework AI generation produced no usable rows for %r", name)
+            _finish_framework_job(
+                job_id,
+                error="Could not generate a framework for that name. "
+                "Try a more specific name or upload a file instead.",
+            )
+            return
+
+        _finish_framework_job(
+            job_id,
+            result={
+                "rows": rows,
+                "columns": columns,
+                "row_count": len(rows),
+                "source_filename": f"AI · {name}",
+                "ai_generated": True,
+            },
+        )
+    except Exception as e:
+        logger.error(
+            "Framework generation worker crashed for %r: %s", name, e, exc_info=True
+        )
+        _finish_framework_job(job_id, error="AI generation failed. Please try again.")
+    finally:
+        loop.close()
+
+
 @policy_hub_bp.route("/frameworks/generate", methods=["POST"])
 @permission_required_body("policyhub.framework.create")
 async def generate_framework():
-    """Draft a framework's control set with Kimi 2.5 and return it as an unsaved
-    preview (same shape as /frameworks/upload). Nothing is persisted — the user
-    reviews/edits the AI draft in the editable table, then calls /frameworks/save."""
+    """Kick off an async Kimi 2.5 draft of a framework's control set and return a
+    job id immediately (well within the gateway's ~29s cap). The generation runs
+    in a background thread; the client polls
+    GET /frameworks/generate/status?job_id=… for the drafted rows. Nothing is
+    persisted — the user reviews/edits the draft, then calls /frameworks/save."""
     denied = _require_framework_owner()
     if denied:
         return denied
@@ -4267,47 +4343,59 @@ async def generate_framework():
         return jsonify({"error": "Unauthorized"}), 401
     _, user_id = parse_composite_user_id(user_id)
 
-    prompt = _build_framework_prompt(name)
+    job_id = str(uuid.uuid4())
+    _save_job(
+        job_id,
+        {
+            "job_id": job_id,
+            "user_id": user_id,
+            "kind": "framework_generate",
+            "name": name,
+            "status": "processing",
+            "error": None,
+            "result": None,
+        },
+    )
 
-    try:
-        response = await get_think_fire_response2_og(prompt, user_id, Credits())
-    except Exception as e:
-        logger.error("Framework AI generation failed for %r: %s", name, e)
-        return jsonify({"error": "AI generation failed. Please try again."}), 502
+    threading.Thread(
+        target=_framework_generation_worker,
+        args=(job_id, name, user_id),
+        daemon=True,
+    ).start()
 
-    if response == "INSUFFICIENT":
-        return jsonify({"error": "Insufficient AI credits"}), 402
-    if isinstance(response, str) and response.startswith(GUARDRAIL_BLOCKED):
-        return jsonify({"error": response}), 403
-    if not response:
-        return jsonify({"error": "The AI returned an empty response. Please try again."}), 502
+    return jsonify({"job_id": job_id, "status": "PROCESSING"}), 202
 
-    parsed = extract_json_safe(response)
-    columns, rows = _normalize_ai_framework(parsed)
-    if not rows:
-        logger.warning("Framework AI generation produced no usable rows for %r", name)
+
+@policy_hub_bp.route("/frameworks/generate/status", methods=["GET"])
+@permission_required_body("policyhub.framework.view")
+def generate_framework_status():
+    """Poll a framework-generation job. While running → {status: PROCESSING}.
+    On success → {status: DONE, rows, columns, …} (same shape the editable table
+    consumed from the old synchronous endpoint). On failure → {status: ERROR,
+    error}."""
+    denied = _require_framework_owner()
+    if denied:
+        return denied
+
+    job_id = request.args.get("job_id")
+    if not job_id:
+        return jsonify({"error": "job_id is required"}), 400
+
+    job = _read_job(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+
+    status = (job.get("status") or "processing").upper()
+    if status == "DONE":
+        return jsonify({"status": "DONE", **(job.get("result") or {})}), 200
+    if status == "ERROR":
         return (
             jsonify(
-                {
-                    "error": "Could not generate a framework for that name. "
-                    "Try a more specific name or upload a file instead."
-                }
+                {"status": "ERROR", "error": job.get("error") or "AI generation failed."}
             ),
-            502,
+            200,
         )
-
-    return (
-        jsonify(
-            {
-                "rows": rows,
-                "columns": columns,
-                "row_count": len(rows),
-                "source_filename": f"AI · {name}",
-                "ai_generated": True,
-            }
-        ),
-        200,
-    )
+    return jsonify({"status": "PROCESSING"}), 200
 
 
 @policy_hub_bp.route("/frameworks/search", methods=["GET"])
