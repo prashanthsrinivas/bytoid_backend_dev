@@ -2202,12 +2202,26 @@ async def add_tracker_column():
 
             schema_cols = tracker_data["schema"]["columns"]
 
-            # Prevent duplicate column names
-            existing_names = {col["source_column"] for col in schema_cols}
+            # Prevent duplicate column names. Match on source_column OR name and
+            # tolerate legacy columns that predate the source_column field
+            # (a bare col["source_column"] KeyErrors → 500 on older trackers).
+            existing_names = set()
+            for col in schema_cols:
+                existing_names.add(col.get("source_column"))
+                existing_names.add(col.get("name"))
+            existing_names.discard(None)
             if column_name in existing_names:
                 return jsonify({"error": f"Column '{column_name}' already exists"}), 409
 
-            new_col_id = f"col_{len(schema_cols) + 1}"
+            # Generate a collision-free column id. Columns may have been deleted,
+            # so len()+1 can clash with an existing col_N id and corrupt the row
+            # values for that column.
+            existing_ids = {col.get("id") for col in schema_cols}
+            _next_idx = len(schema_cols) + 1
+            new_col_id = f"col_{_next_idx}"
+            while new_col_id in existing_ids:
+                _next_idx += 1
+                new_col_id = f"col_{_next_idx}"
             new_col = {
                 "id": new_col_id,
                 "name": column_name,
