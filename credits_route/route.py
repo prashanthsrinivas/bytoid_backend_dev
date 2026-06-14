@@ -203,12 +203,15 @@ async def get_credits():
     #     return jsonify(cached)
 
     conn = connect_to_rds()
-    cm = CreditManager(conn)
-
-    summary = cm.get_credit_summary(user_id)
-
-    conn.close()
-    return jsonify(summary)
+    try:
+        cm = CreditManager(conn)
+        summary = cm.get_credit_summary(user_id)
+        return jsonify(summary)
+    finally:
+        # Always return the connection to the pool — a leak here exhausts the
+        # pool and makes every subsequent request (incl. the auth decorator's
+        # DB lookup) hang → gateway timeout → response without CORS headers.
+        conn.close()
 
 
 # ====================================================
@@ -221,23 +224,22 @@ def check_credits():
         return jsonify({"error": "user_id is required"}), 400
 
     conn = connect_to_rds()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT COALESCE(SUM(credits_total - credits_used), 0)
-        FROM credit_buckets
-        WHERE user_id = %s
-          AND is_expired = 0
-        """,
-        (user_id,),
-    )
-
-    total = cur.fetchone()[0]
-    cur.close()
-    conn.close()
-
-    return jsonify({"has_credits": total > 0, "total_credits": total})
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(credits_total - credits_used), 0)
+            FROM credit_buckets
+            WHERE user_id = %s
+              AND is_expired = 0
+            """,
+            (user_id,),
+        )
+        total = cur.fetchone()[0]
+        cur.close()
+        return jsonify({"has_credits": total > 0, "total_credits": total})
+    finally:
+        conn.close()
 
 
 # ====================================================
@@ -251,31 +253,30 @@ def get_credit_buckets():
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT
-            bucket_id,
-            source_type,
-            credits_total,
-            credits_used,
-            (credits_total - credits_used) AS remaining,
-            expires_at,
-            created_at
-        FROM credit_buckets
-        WHERE user_id = %s
-          AND is_expired = 0
-        ORDER BY expires_at ASC
-        """,
-        (user_id,),
-    )
-
-    buckets = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    return jsonify({"buckets": buckets})
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                bucket_id,
+                source_type,
+                credits_total,
+                credits_used,
+                (credits_total - credits_used) AS remaining,
+                expires_at,
+                created_at
+            FROM credit_buckets
+            WHERE user_id = %s
+              AND is_expired = 0
+            ORDER BY expires_at ASC
+            """,
+            (user_id,),
+        )
+        buckets = cur.fetchall()
+        cur.close()
+        return jsonify({"buckets": buckets})
+    finally:
+        conn.close()
 
 
 # ====================================================
@@ -296,100 +297,102 @@ def get_credit_usage():
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
-    cur = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        cur = conn.cursor(pymysql.cursors.DictCursor)
 
-    time_filter = ""
-    params = [user_id]
+        time_filter = ""
+        params = [user_id]
 
-    if view == "custom":
-        if not from_date or not to_date:
-            return jsonify({"error": "from_date and to_date required"}), 400
-        time_filter = "AND DATE(u.created_at) BETWEEN %s AND %s"
-        params += [from_date, to_date]
-    elif view == "daily":
-        time_filter = "AND DATE(u.created_at) = CURDATE()"
-    elif view == "monthly":
-        time_filter = "AND YEAR(u.created_at) = YEAR(CURDATE()) AND MONTH(u.created_at) = MONTH(CURDATE())"
-    elif view == "yearly":
-        time_filter = "AND YEAR(u.created_at) = YEAR(CURDATE())"
+        if view == "custom":
+            if not from_date or not to_date:
+                return jsonify({"error": "from_date and to_date required"}), 400
+            time_filter = "AND DATE(u.created_at) BETWEEN %s AND %s"
+            params += [from_date, to_date]
+        elif view == "daily":
+            time_filter = "AND DATE(u.created_at) = CURDATE()"
+        elif view == "monthly":
+            time_filter = "AND YEAR(u.created_at) = YEAR(CURDATE()) AND MONTH(u.created_at) = MONTH(CURDATE())"
+        elif view == "yearly":
+            time_filter = "AND YEAR(u.created_at) = YEAR(CURDATE())"
 
-    # -----------------------------
-    # 1️⃣ Summary (reason-wise)
-    # -----------------------------
-    cur.execute(
-        f"""
-        SELECT
-            u.reason,
-            SUM(u.credits_used) AS total_used
-        FROM credit_usage_log u
-        WHERE u.user_id = %s
-        {time_filter}
-        GROUP BY u.reason
-        """,
-        params,
-    )
-    summary = cur.fetchall()
+        # -----------------------------
+        # 1️⃣ Summary (reason-wise)
+        # -----------------------------
+        cur.execute(
+            f"""
+            SELECT
+                u.reason,
+                SUM(u.credits_used) AS total_used
+            FROM credit_usage_log u
+            WHERE u.user_id = %s
+            {time_filter}
+            GROUP BY u.reason
+            """,
+            params,
+        )
+        summary = cur.fetchall()
 
-    # -----------------------------
-    # 2️⃣ Trend (date/month wise)
-    # -----------------------------
-    period_expr = (
-        "DATE(u.created_at)"
-        if group_by == "date"
-        else "DATE_FORMAT(u.created_at, '%Y-%m')"
-    )
+        # -----------------------------
+        # 2️⃣ Trend (date/month wise)
+        # -----------------------------
+        period_expr = (
+            "DATE(u.created_at)"
+            if group_by == "date"
+            else "DATE_FORMAT(u.created_at, '%Y-%m')"
+        )
 
-    cur.execute(
-        f"""
-        SELECT
-            {period_expr} AS period,
-            SUM(u.credits_used) AS total_used
-        FROM credit_usage_log u
-        WHERE u.user_id = %s
-        {time_filter}
-        GROUP BY period
-        ORDER BY period DESC
-        """,
-        params,
-    )
-    trend = cur.fetchall()
+        cur.execute(
+            f"""
+            SELECT
+                {period_expr} AS period,
+                SUM(u.credits_used) AS total_used
+            FROM credit_usage_log u
+            WHERE u.user_id = %s
+            {time_filter}
+            GROUP BY period
+            ORDER BY period DESC
+            """,
+            params,
+        )
+        trend = cur.fetchall()
 
-    # -----------------------------
-    # 3️⃣ Logs (limited)
-    # -----------------------------
-    cur.execute(
-        f"""
-        SELECT
-            u.created_at AS used_at,
-            u.credits_used,
-            u.reason,
-            u.reference_id,
-            b.source_type
-        FROM credit_usage_log u
-        JOIN credit_buckets b ON u.bucket_id = b.bucket_id
-        WHERE u.user_id = %s
-        {time_filter}
-        ORDER BY u.created_at DESC
-        LIMIT %s OFFSET %s
-        """,
-        params + [limit, offset],
-    )
-    logs = cur.fetchall()
+        # -----------------------------
+        # 3️⃣ Logs (limited)
+        # -----------------------------
+        cur.execute(
+            f"""
+            SELECT
+                u.created_at AS used_at,
+                u.credits_used,
+                u.reason,
+                u.reference_id,
+                b.source_type
+            FROM credit_usage_log u
+            JOIN credit_buckets b ON u.bucket_id = b.bucket_id
+            WHERE u.user_id = %s
+            {time_filter}
+            ORDER BY u.created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            params + [limit, offset],
+        )
+        logs = cur.fetchall()
 
-    cur.close()
-    conn.close()
+        cur.close()
 
-    return jsonify(
-        {
-            "user_id": user_id,
-            "view": view,
-            "summary": summary,
-            "trend": trend,
-            "logs": logs,
-            "limit": limit,
-            "offset": offset,
-        }
-    )
+        return jsonify(
+            {
+                "user_id": user_id,
+                "view": view,
+                "summary": summary,
+                "trend": trend,
+                "logs": logs,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+    finally:
+        conn.close()
 
 
 # ====================================================
@@ -404,26 +407,26 @@ def credit_summary():
     logged_in_user_id, user_id = parse_composite_user_id(user_id)
 
     conn = connect_to_rds()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT
-            source_type,
-            SUM(credits_total) AS total,
-            SUM(credits_used) AS used,
-            SUM(credits_total - credits_used) AS remaining
-        FROM credit_buckets
-        WHERE user_id = %s
-          AND is_expired = 0
-        GROUP BY source_type
-        """,
-        (user_id,),
-    )
-
-    summary = cur.fetchall()
-    cur.close()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                source_type,
+                SUM(credits_total) AS total,
+                SUM(credits_used) AS used,
+                SUM(credits_total - credits_used) AS remaining
+            FROM credit_buckets
+            WHERE user_id = %s
+              AND is_expired = 0
+            GROUP BY source_type
+            """,
+            (user_id,),
+        )
+        summary = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
 
     return jsonify({"user_id": user_id, "summary": summary})
 

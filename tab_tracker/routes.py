@@ -2200,7 +2200,10 @@ async def add_tracker_column():
             if not column_name:
                 return jsonify({"error": "Table requires column_name"}), 400
 
-            schema_cols = tracker_data["schema"]["columns"]
+            # Legacy trackers may predate the schema/columns keys — tolerate
+            # their absence instead of KeyError-ing into a 500.
+            schema = tracker_data.setdefault("schema", {})
+            schema_cols = schema.setdefault("columns", [])
 
             # Prevent duplicate column names. Match on source_column OR name and
             # tolerate legacy columns that predate the source_column field
@@ -2234,7 +2237,7 @@ async def add_tracker_column():
             default_value = data.get("default_value", None)
             if default_value is not None:
                 for row in tracker_data.get("rows", []):
-                    row["values"].setdefault(new_col_id, default_value)
+                    row.setdefault("values", {}).setdefault(new_col_id, default_value)
 
             schema_change = {
                 "type": "column_added",
@@ -2259,7 +2262,7 @@ async def add_tracker_column():
             if not value:
                 return jsonify({"error": "Matrix requires value (axis label)"}), 400
 
-            schema = tracker_data["schema"]
+            schema = tracker_data.setdefault("schema", {})
             axis_key = "rows" if axis == "row" else "columns"
 
             if value in schema.get(axis_key, []):
@@ -2276,11 +2279,12 @@ async def add_tracker_column():
             if not metric:
                 return jsonify({"error": "Scorecard requires metric"}), 400
 
-            existing_metrics = tracker_data["schema"].get("metrics", [])
+            schema = tracker_data.setdefault("schema", {})
+            existing_metrics = schema.get("metrics", [])
             if metric in existing_metrics:
                 return jsonify({"error": f"Metric '{metric}' already exists"}), 409
 
-            tracker_data["schema"].setdefault("metrics", []).append(metric)
+            schema.setdefault("metrics", []).append(metric)
             schema_change = {"type": "metric_added", "metric": metric}
 
         else:

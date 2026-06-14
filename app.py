@@ -2,7 +2,7 @@ from datetime import datetime
 import json
 from services.audit_log_service import build_audit_actor
 from utils.base_logger import get_logger
-from flask import Flask, request, g, session
+from flask import Flask, request, g, session, jsonify
 from flask_compress import Compress
 from google_route.routes import google_bp
 from facebook_route.routes import facebook_bp
@@ -240,6 +240,29 @@ def handle_options(path):
         )
         resp.headers["Access-Control-Max-Age"] = "3600"
     return resp
+
+
+@app.errorhandler(Exception)
+def handle_uncaught_exception(e):
+    """Last-resort handler: turn any unhandled exception into a clean JSON 500
+    that still flows through `cors_after_request`. Without this, an uncaught
+    exception can surface to the browser as a CORS failure ("No
+    Access-Control-Allow-Origin") because the default error response never
+    carried the CORS headers — masking the real 500. HTTP exceptions
+    (404/405/explicit abort()) are left to Flask's own handling so their status
+    codes are preserved."""
+    from werkzeug.exceptions import HTTPException
+
+    if isinstance(e, HTTPException):
+        return e
+    get_logger("api").error(
+        "Unhandled exception on %s %s: %s",
+        request.method,
+        request.path,
+        e,
+        exc_info=True,
+    )
+    return jsonify({"error": "Internal server error"}), 500
 
 
 blueprints = [
