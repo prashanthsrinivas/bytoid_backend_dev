@@ -209,7 +209,17 @@ def aws_saml_login():
     parsed = urlparse(redirect_url)
     host_origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else ""
     if host_origin not in ALLOWED_ORIGINS:
-        redirect_url = "https://app.bytoid.ai/aws-integration"
+        # Infer the caller's origin from headers so dev/demo instances redirect
+        # back to themselves (localhost, demo.bytoid.ai, etc.) rather than prod.
+        req_origin = request.headers.get("Origin") or ""
+        if not req_origin:
+            referer = request.headers.get("Referer") or ""
+            p = urlparse(referer)
+            req_origin = f"{p.scheme}://{p.netloc}" if p.netloc else ""
+        if req_origin in ALLOWED_ORIGINS:
+            redirect_url = f"{req_origin}/aws-integration"
+        else:
+            redirect_url = "https://app.bytoid.ai/aws-integration"
 
     # Store state in RelayState (echoed back by IdP in ACS POST) instead of
     # Flask session — session cookies are blocked on cross-site POST (SameSite=Lax).
