@@ -971,20 +971,26 @@ def get_inbox(
     page: int = 1,
     page_size: int = 25,
 ) -> tuple[list, int]:
-    """Return paginated inbox rows for a reviewer or approver by stage role."""
+    """Return a paginated inbox of ALL workflows currently in the stage matching
+    `role`, scoped to the caller's org.
+
+    The inbox is org-wide on purpose: everyone sees every pending review/approval
+    so the team has visibility into what is outstanding and with whom. Whether the
+    *viewer* may act on a given row is conveyed per-row via the `viewer` block
+    (see `_attach_inbox_viewer`); the UI gates the Review/Approve buttons on that,
+    so non-assignees see the item but no action controls.
+    """
     if role in ("reviewer", "quality_reviewer"):
-        col = "current_quality_reviewer"
         state_filter = "quality_review"
     elif role == "governance_reviewer":
-        col = "current_governance_reviewer"
         state_filter = "governance_review"
     elif role == "approver":
-        col = "current_approver"
         state_filter = "approval"
     else:
         raise ValueError(f"Unknown role: {role}")
 
-    params: list = [user_id, state_filter]
+    # Org-scoped, stage-filtered — NOT filtered to the caller's assigned items.
+    params: list = [state_filter, org_id]
     extra = ""
     if doc_type:
         extra = " AND doc_type=%s"
@@ -996,13 +1002,13 @@ def get_inbox(
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
                 f"SELECT COUNT(*) AS cnt FROM document_workflow "
-                f"WHERE {col}=%s AND state=%s{extra}",
+                f"WHERE state=%s AND org_id=%s{extra}",
                 params,
             )
             total = cur.fetchone()["cnt"]
             cur.execute(
                 f"SELECT * FROM document_workflow "
-                f"WHERE {col}=%s AND state=%s{extra} "
+                f"WHERE state=%s AND org_id=%s{extra} "
                 f"ORDER BY submitted_at DESC LIMIT %s OFFSET %s",
                 params + [page_size, offset],
             )
@@ -1012,6 +1018,10 @@ def get_inbox(
             # pending with. Batched into a single users lookup to avoid the N+1
             # that calling enrich_workflow_for_viewer() per row would incur.
             _attach_inbox_assignees(cur, rows)
+            # Attach a per-row `viewer` block so the UI can gate action buttons
+            # (only the assignee for the current stage may act). Pure in-Python
+            # computation — no extra DB round-trips.
+            _attach_inbox_viewer(rows, user_id)
     finally:
         conn.close()
     return rows, total
@@ -1057,6 +1067,63 @@ def _attach_inbox_assignees(cur, rows: list[dict]) -> None:
             uid = row.get(col)
             assignees[slot] = {"user_id": uid, "email": emails.get(uid)} if uid else None
         row["assignees"] = assignees
+
+
+def _attach_inbox_viewer(rows: list[dict], viewer_user_id: str) -> None:
+    """Mutate `rows` in place, adding a `viewer` block per row describing what the
+    calling user may do with that row.
+
+    Mirrors the gating in enrich_workflow_for_viewer()/routes.review_document so
+    the inbox is the single source of truth for the UI's button visibility:
+    only the named assignee for the current stage (or the owner, when that slot
+    is empty) gets action permissions. Pure Python — no DB calls.
+    """
+    for row in rows:
+        state = row.get("state") or "draft"
+
+        # Viewer's role on this workflow — first matching column wins (owner first).
+        role: str | None = None
+        for col, label in _ROLE_COLUMNS:
+            if row.get(col) == viewer_user_id:
+                role = label
+                break
+
+        permitted_actions: list[str] = []
+        is_current_assignee = False
+        actor = _STATE_ACTOR.get(state)
+        if actor:
+            assignee_col, actor_role = actor
+            assigned_uid = row.get(assignee_col)
+            if role == actor_role and assigned_uid == viewer_user_id:
+                permitted_actions = ["approve", "send_back"]
+                is_current_assignee = True
+            elif not assigned_uid and role == "owner":
+                # Empty slot → owner may act to unblock.
+                permitted_actions = ["approve", "send_back"]
+                is_current_assignee = True
+        elif state == "draft" and role == "owner":
+            permitted_actions = ["submit"]
+            is_current_assignee = True
+
+        if role == "owner" and state not in ("draft", "published") and "cancel" not in permitted_actions:
+            permitted_actions.append("cancel")
+
+        # Email is already resolved into `assignees` (if the viewer is a party);
+        # reuse it to avoid another lookup. None otherwise — the UI gates on role
+        # and permitted_actions, not email.
+        viewer_email = None
+        for slot in row.get("assignees", {}).values():
+            if slot and slot.get("user_id") == viewer_user_id:
+                viewer_email = slot.get("email")
+                break
+
+        row["viewer"] = {
+            "user_id": viewer_user_id,
+            "email": viewer_email,
+            "role": role,
+            "permitted_actions": permitted_actions,
+            "is_assignee_for_current_step": is_current_assignee,
+        }
 
 
 def get_workflow_for_doc_any_role(

@@ -319,28 +319,55 @@ def test_get_inbox_unknown_role_raises():
         sm.get_inbox("u1", "bogus", "org")
 
 
-def test_get_inbox_quality_reviewer():
+def test_get_inbox_is_org_scoped_not_user_scoped():
+    # The inbox is org-wide: it lists ALL workflows in the role's stage for the
+    # org, NOT just the caller's assigned items. So the WHERE filters on
+    # state + org_id, never on the caller's reviewer column.
     conn = stubs.make_conn(fetchone={"cnt": 2}, fetchall=[{"workflow_id": "w1"}])
     with stubs.mock_rds(conn, _ALIAS):
         rows, total = sm.get_inbox("u1", "quality_reviewer", "org")
-    assert rows == [{"workflow_id": "w1"}] and total == 2
+    assert total == 2
+    assert rows[0]["workflow_id"] == "w1"
+    # Every row is enriched for the UI (who it's pending with + viewer gating).
+    assert "assignees" in rows[0] and "viewer" in rows[0]
     sqls = conn.fake_cursor.all_sql()
-    assert "current_quality_reviewer=%s" in sqls and "state=%s" in sqls
+    assert "state=%s" in sqls and "org_id=%s" in sqls
+    assert "current_quality_reviewer=%s" not in sqls  # not user-scoped anymore
 
 
-def test_get_inbox_role_column_mapping():
+def test_get_inbox_role_maps_to_stage_state():
     conn = stubs.make_conn(fetchone={"cnt": 0}, fetchall=[])
     with stubs.mock_rds(conn, _ALIAS):
         sm.get_inbox("u1", "approver", "org")
-    assert "current_approver=%s" in conn.fake_cursor.all_sql()
+    # COUNT params: [state_filter, org_id] — approver → approval stage.
+    assert conn.fake_cursor.executed[0][1] == ["approval", "org"]
 
 
 def test_get_inbox_doc_type_filter_adds_param():
     conn = stubs.make_conn(fetchone={"cnt": 0}, fetchall=[])
     with stubs.mock_rds(conn, _ALIAS):
         sm.get_inbox("u1", "governance_reviewer", "org", doc_type="policy")
-    # COUNT params: [user_id, state_filter, doc_type]
-    assert conn.fake_cursor.executed[0][1] == ["u1", "governance_review", "policy"]
+    # COUNT params: [state_filter, org_id, doc_type]
+    assert conn.fake_cursor.executed[0][1] == ["governance_review", "org", "policy"]
+
+
+def test_inbox_viewer_gates_actions_to_current_assignee():
+    # Org-wide inbox: the assignee for the current stage gets action permissions;
+    # other viewers see the row (assignees populated) but no permitted_actions.
+    rows = [{"workflow_id": "w1", "state": "approval", "current_approver": "u1", "owner_user_id": "owner"}]
+    sm._attach_inbox_viewer([dict(rows[0])], "u1")  # smoke: no raise on bare row
+
+    assignee_row = dict(rows[0])
+    sm._attach_inbox_viewer([assignee_row], "u1")
+    assert assignee_row["viewer"]["role"] == "approver"
+    assert assignee_row["viewer"]["is_assignee_for_current_step"] is True
+    assert "approve" in assignee_row["viewer"]["permitted_actions"]
+
+    bystander_row = dict(rows[0])
+    sm._attach_inbox_viewer([bystander_row], "someone_else")
+    assert bystander_row["viewer"]["role"] is None
+    assert bystander_row["viewer"]["is_assignee_for_current_step"] is False
+    assert bystander_row["viewer"]["permitted_actions"] == []
 
 
 # ── get_workflow_for_doc_any_role ─────────────────────────────────────────────
