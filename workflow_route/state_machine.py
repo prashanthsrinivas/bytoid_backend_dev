@@ -1007,9 +1007,56 @@ def get_inbox(
                 params + [page_size, offset],
             )
             rows = [dict(r) for r in cur.fetchall()]
+            # Attach an `assignees` object to each row (owner + reviewer/approver
+            # slots resolved to email) so the inbox UI can show *who* an item is
+            # pending with. Batched into a single users lookup to avoid the N+1
+            # that calling enrich_workflow_for_viewer() per row would incur.
+            _attach_inbox_assignees(cur, rows)
     finally:
         conn.close()
     return rows, total
+
+
+# Columns whose values are user_ids we resolve to emails for the inbox.
+_INBOX_ASSIGNEE_COLS = (
+    ("owner", "owner_user_id"),
+    ("quality_reviewer", "current_quality_reviewer"),
+    ("governance_reviewer", "current_governance_reviewer"),
+    ("approver", "current_approver"),
+)
+
+
+def _attach_inbox_assignees(cur, rows: list[dict]) -> None:
+    """Mutate `rows` in place, adding an `assignees` dict per row.
+
+    Each slot is {user_id, email} or None, matching the shape produced by
+    enrich_workflow_for_viewer() so the frontend can treat both uniformly.
+    """
+    if not rows:
+        return
+
+    user_ids: set[str] = set()
+    for row in rows:
+        for _, col in _INBOX_ASSIGNEE_COLS:
+            uid = row.get(col)
+            if uid:
+                user_ids.add(uid)
+
+    emails: dict[str, str] = {}
+    if user_ids:
+        placeholders = ",".join(["%s"] * len(user_ids))
+        cur.execute(
+            f"SELECT user_id, email FROM users WHERE user_id IN ({placeholders})",
+            tuple(user_ids),
+        )
+        emails = {r["user_id"]: r.get("email") for r in cur.fetchall()}
+
+    for row in rows:
+        assignees = {}
+        for slot, col in _INBOX_ASSIGNEE_COLS:
+            uid = row.get(col)
+            assignees[slot] = {"user_id": uid, "email": emails.get(uid)} if uid else None
+        row["assignees"] = assignees
 
 
 def get_workflow_for_doc_any_role(
